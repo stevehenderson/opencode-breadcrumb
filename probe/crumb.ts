@@ -101,6 +101,77 @@ export async function readHostsFile(file: string, home: string = homedir()): Pro
 }
 
 // ---------------------------------------------------------------------------
+// Local target: this machine, read directly from the filesystem (no SSH).
+//
+// crumb works with no host list at all — the machine where it runs is always
+// reachable. A local target reads ~/.local/share/breadcrumb/state.json and the
+// opencode.db mtime straight off disk, and resumes with a plain child process
+// instead of `ssh -t`. Reads are shaped identically to the SSH read command's
+// output so classifyReads treats local and remote machines the same way.
+
+export const LOCAL_HOST = "local";
+const LOCAL_ALIASES = new Set(["local", "localhost", "(local)"]);
+
+export function isLocalHost(host: string): boolean {
+  return LOCAL_ALIASES.has(host.toLowerCase());
+}
+
+export function localStatePaths(home: string): { state: string; db: string } {
+  return {
+    state: path.join(home, ".local", "share", "breadcrumb", "state.json"),
+    db: path.join(home, ".local", "share", "opencode", "opencode.db"),
+  };
+}
+
+/** Read the local state file + opencode.db mtime, formatted like the SSH read. */
+export async function readLocalState(home: string = homedir()): Promise<SshResult> {
+  const { state, db } = localStatePaths(home);
+  let stateText = "";
+  try {
+    stateText = await fs.readFile(state, "utf8");
+  } catch {
+    // no state file yet — treated as "no state" downstream
+  }
+  let mtimeLine = "";
+  try {
+    const st = await fs.stat(db);
+    mtimeLine = `${Math.floor(st.mtimeMs / 1000)}\n`;
+  } catch {
+    // no opencode.db — liveness stays undetermined
+  }
+  return { code: 0, stdout: `${READ_MARKER}\n${stateText}\n${READ_SEP}\n${mtimeLine}`, stderr: "" };
+}
+
+/** Run a shell command on this machine, capturing output (local precheck). */
+export type LocalExec = (command: string) => Promise<SshResult>;
+
+export function systemLocalExec(): LocalExec {
+  return (command) =>
+    new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      const child = spawn("sh", ["-c", command], { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
+      child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
+      child.on("error", (err: Error) => resolve({ code: -1, stdout, stderr: (stderr ? stderr + "\n" : "") + err.message }));
+      child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    });
+}
+
+/** Run the launch command on this machine with an inherited TTY (local resume). */
+export function systemLocalResume(): (command: string) => Promise<number> {
+  return (command) =>
+    new Promise((resolve) => {
+      const child = spawn("sh", ["-c", command], { stdio: "inherit" });
+      child.on("error", (err: Error) => {
+        console.error(`crumb: launch failed: ${err.message}`);
+        resolve(-1);
+      });
+      child.on("close", (code) => resolve(code ?? -1));
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Read fan-out (FR-PROBE-021/030/031, FR-PROBE-070's same-round db mtime)
 
 export function buildReadCommand(): string {
@@ -436,6 +507,10 @@ export function gitDiffs(
 export interface CrumbOptions {
   health: boolean;
   hostsFile: string;
+  /** True when --hosts was given explicitly (so a missing file is an error, not local fallback). */
+  hostsFileExplicit: boolean;
+  /** Force local-only: read this machine directly, never SSH. */
+  local: boolean;
   plain: boolean;
   noTmux: boolean;
   deadlineMs: number;
@@ -449,6 +524,8 @@ export function parseArgs(argv: string[]): CrumbOptions {
   const opts: CrumbOptions = {
     health: false,
     hostsFile: defaultHostsFile(),
+    hostsFileExplicit: false,
+    local: false,
     plain: false,
     noTmux: false,
     deadlineMs: DEFAULT_DEADLINE_MS,
@@ -469,6 +546,10 @@ export function parseArgs(argv: string[]): CrumbOptions {
         break;
       case "--hosts":
         opts.hostsFile = next();
+        opts.hostsFileExplicit = true;
+        break;
+      case "--local":
+        opts.local = true;
         break;
       case "--plain":
         opts.plain = true;
@@ -509,6 +590,7 @@ Usage:
 
 Resume options:
   --hosts <file>        host list file (default ~/.config/breadcrumb/hosts)
+  --local               read only this machine, directly (no SSH)
   --plain               numbered list from stdin instead of fzf
   --no-tmux             do not wrap the resume in a tmux session
   --deadline <ms>       overall read deadline (default 10000)
@@ -522,6 +604,8 @@ Install options:
   --dest <dir>          plugin directory (default ~/.config/opencode/plugins)
 
 Host list format: one SSH target per line; # comments and blank lines ok.
+With no host list, crumb reads this machine only. A "local" entry in the list
+mixes this machine (read directly) with your SSH targets.
 Exit codes: 0 ok/resumed; 1 cancelled, no selection, or resume failed;
 2 configuration error. crumb health exits 1 if any host is unreachable.
 (--health is accepted as an alias for the health command.)`;
@@ -529,6 +613,12 @@ Exit codes: 0 ok/resumed; 1 cancelled, no selection, or resume failed;
 export interface CrumbDeps {
   ssh?: SshRunner;
   resume?: ResumeRunner;
+  /** Read the local machine's state (defaults to reading the filesystem). */
+  readLocal?: (home: string) => Promise<SshResult>;
+  /** Run a local precheck command (defaults to `sh -c`). */
+  localExec?: LocalExec;
+  /** Resume locally with an inherited TTY (defaults to `sh -c`). */
+  localResume?: (command: string) => Promise<number>;
   pick?: (lines: string[]) => Promise<number | null>;
   out?: (s: string) => void;
   err?: (s: string) => void;
@@ -536,6 +626,35 @@ export interface CrumbDeps {
   fzfAvailable?: () => boolean;
   now?: () => number;
   home?: string;
+}
+
+/**
+ * Decide which machines to read. Precedence: `--local` forces this machine
+ * only; otherwise the host list is read, and a *missing default* file (or an
+ * empty list) also falls back to local — crumb always works out of the box on
+ * the machine where it runs. An explicit `--hosts <file>` that cannot be read
+ * is an error. Returns null on that error (message already printed).
+ */
+export async function resolveTargets(
+  opts: CrumbOptions,
+  home: string,
+  err: (s: string) => void,
+): Promise<string[] | null> {
+  if (opts.local) return [LOCAL_HOST];
+  let text: string;
+  try {
+    text = await fs.readFile(expandHome(opts.hostsFile, home), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !opts.hostsFileExplicit) {
+      err("crumb: no host list; reading this machine only (add ~/.config/breadcrumb/hosts for more).");
+      return [LOCAL_HOST];
+    }
+    err(`crumb: cannot read host list ${expandHome(opts.hostsFile, home)}: ${(e as Error).message}`);
+    err("crumb: create it with one SSH target per line (see README), or use --local.");
+    return null;
+  }
+  const hosts = parseHosts(text);
+  return hosts.length === 0 ? [LOCAL_HOST] : hosts;
 }
 
 /**
@@ -601,21 +720,17 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
     return 0;
   }
 
-  let hosts: string[];
-  try {
-    hosts = await readHostsFile(opts.hostsFile, home);
-  } catch (e) {
-    err(`crumb: cannot read host list ${expandHome(opts.hostsFile, home)}: ${(e as Error).message}`);
-    err("crumb: create it with one SSH target per line (see README).");
-    return 2;
-  }
-  if (hosts.length === 0) {
-    err(`crumb: host list ${expandHome(opts.hostsFile, home)} is empty`);
-    return 2;
-  }
+  const hosts = await resolveTargets(opts, home, err);
+  if (hosts === null) return 2;
 
-  const reads = await readAllHosts(hosts, { connectMs: opts.connectMs, deadlineMs: opts.deadlineMs, ssh });
-  const statuses = classifyReads(reads, now());
+  const readLocal = deps.readLocal ?? readLocalState;
+  const wantLocal = hosts.some(isLocalHost);
+  const remoteHosts = hosts.filter((h) => !isLocalHost(h));
+  const remoteReads = remoteHosts.length
+    ? await readAllHosts(remoteHosts, { connectMs: opts.connectMs, deadlineMs: opts.deadlineMs, ssh })
+    : [];
+  const localReads: HostRead[] = wantLocal ? [{ host: LOCAL_HOST, result: await readLocal(home) }] : [];
+  const statuses = classifyReads([...localReads, ...remoteReads], now());
 
   if (opts.health) {
     out(formatHealth(statuses, now()));
@@ -657,19 +772,27 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
     return 1; // FR-PROBE-081: non-zero, no side effects
   }
   const sel = list[choice - 1];
+  const local = isLocalHost(sel.host);
+  const where = local ? "this machine" : sel.host;
 
-  out(`resuming ${sel.session_id} on ${sel.host} — ${sel.directory}`);
+  out(`resuming ${sel.session_id} on ${where} — ${sel.directory}`);
 
-  const pre = await ssh(precheckArgs(sel.host, sel.directory, opts.connectMs));
+  const localExec = deps.localExec ?? systemLocalExec();
+  const pre = local
+    ? await localExec(buildPrecheckCommand(sel.directory))
+    : await ssh(precheckArgs(sel.host, sel.directory, opts.connectMs));
   if (pre.code !== 0) {
-    err(`crumb: cannot reach ${sel.host} to pre-check: ${firstLine(pre.stderr) ?? `ssh exit ${pre.code}`}`);
-    err(`crumb: manual: ssh -t ${shQuote(sel.host)} ${shQuote(buildLaunchCommand(sel.directory, sel.session_id))}`);
+    if (local) err(`crumb: local pre-check failed: ${firstLine(pre.stderr) ?? `exit ${pre.code}`}`);
+    else {
+      err(`crumb: cannot reach ${sel.host} to pre-check: ${firstLine(pre.stderr) ?? `ssh exit ${pre.code}`}`);
+      err(`crumb: manual: ssh -t ${shQuote(sel.host)} ${shQuote(buildLaunchCommand(sel.directory, sel.session_id))}`);
+    }
     return 1; // FR-RESUME-060
   }
   const pc = parsePrecheck(pre.stdout);
   if (!pc.dirOk) {
-    err(`crumb: directory ${sel.directory} does not exist on ${sel.host}`);
-    err(`crumb: manual (from ${sel.host}'s home): ssh -t ${shQuote(sel.host)}`);
+    err(`crumb: directory ${sel.directory} does not exist on ${where}`);
+    if (!local) err(`crumb: manual (from ${sel.host}'s home): ssh -t ${shQuote(sel.host)}`);
     return 1; // FR-RESUME-060
   }
 
@@ -687,10 +810,12 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
 
   const useTmux = !opts.noTmux && pc.tmux;
   const remote = buildRemoteCommand(sel.directory, sel.session_id, useTmux);
-  const code = await resume(resumeArgs(sel.host, remote));
+  const code = local
+    ? await (deps.localResume ?? systemLocalResume())(remote)
+    : await resume(resumeArgs(sel.host, remote));
   if (code !== 0) {
     err(`crumb: resume exited with code ${code}`);
-    err(`crumb: manual: ssh -t ${shQuote(sel.host)} ${shQuote(remote)}`); // FR-RESUME-060
+    err(`crumb: manual: ${local ? remote : `ssh -t ${shQuote(sel.host)} ${shQuote(remote)}`}`); // FR-RESUME-060
   }
   return code === 0 ? 0 : 1;
 }

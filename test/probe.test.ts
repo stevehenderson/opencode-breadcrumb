@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  LOCAL_HOST,
   PLUGIN_SOURCES,
   buildLaunchCommand,
   buildPickerLines,
@@ -19,6 +20,7 @@ import {
   formatSessionLine,
   gitDiffs,
   installPlugin,
+  isLocalHost,
   main,
   parseArgs,
   parseHosts,
@@ -29,11 +31,14 @@ import {
   pickWithFzf,
   readAllHosts,
   readHostArgs,
+  readLocalState,
+  resolveTargets,
   resumeArgs,
   sessionMatches,
   shQuote,
   splitCommand,
   tmuxSessionName,
+  type CrumbOptions,
   type HostRead,
   type SshResult,
 } from "../probe/crumb.ts";
@@ -507,6 +512,107 @@ test("main search with no terms is a configuration error (exit 2)", async () => 
   const code = await main(["search", "--plain"], { err: (s) => err.push(s) });
   assert.equal(code, 2);
   assert.match(err.join("\n"), /search needs at least one term/);
+});
+
+// -- local target (no host file / --local) -------------------------------------------
+
+test("isLocalHost recognizes the local aliases, case-insensitively", () => {
+  for (const h of ["local", "LOCAL", "localhost", "(local)"]) assert.ok(isLocalHost(h), h);
+  for (const h of ["build-01", "user@host", "localish"]) assert.ok(!isLocalHost(h), h);
+});
+
+test("readLocalState formats state + db mtime like the SSH read; missing files degrade", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "bc-local-"));
+  // Missing files: still a code-0 read, no state, no mtime.
+  const empty = await readLocalState(home);
+  assert.equal(empty.code, 0);
+  assert.deepEqual(parseReadOutput(empty.stdout), { stateText: null, dbMtime: null });
+
+  await fs.mkdir(path.join(home, ".local/share/breadcrumb"), { recursive: true });
+  await fs.mkdir(path.join(home, ".local/share/opencode"), { recursive: true });
+  await fs.writeFile(path.join(home, ".local/share/breadcrumb/state.json"), SEARCH_STATE);
+  await fs.writeFile(path.join(home, ".local/share/opencode/opencode.db"), "x");
+  const got = parseReadOutput((await readLocalState(home)).stdout);
+  assert.ok(got.stateText?.includes("ses_hit"));
+  assert.ok(typeof got.dbMtime === "number" && Number.isFinite(got.dbMtime));
+});
+
+test("resolveTargets: --local, missing default, empty file -> local; explicit missing -> error; hosts -> list", async () => {
+  const base = parseArgs([]);
+  const errs: string[] = [];
+  const err = (s: string) => errs.push(s);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bc-targets-"));
+
+  assert.deepEqual(await resolveTargets({ ...base, local: true }, dir, err), [LOCAL_HOST]);
+
+  // Default file missing (not explicit) -> local, with a note.
+  const missing = { ...base, hostsFile: path.join(dir, "nope"), hostsFileExplicit: false };
+  assert.deepEqual(await resolveTargets(missing, dir, err), [LOCAL_HOST]);
+  assert.ok(errs.join("\n").includes("reading this machine only"));
+
+  // Explicit --hosts that cannot be read -> error (null).
+  const explicit = { ...base, hostsFile: path.join(dir, "nope"), hostsFileExplicit: true } satisfies CrumbOptions;
+  assert.equal(await resolveTargets(explicit, dir, err), null);
+
+  // Empty file -> local.
+  const emptyFile = path.join(dir, "empty");
+  await fs.writeFile(emptyFile, "\n# just a comment\n");
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: emptyFile }, dir, err), [LOCAL_HOST]);
+
+  // Populated file -> its hosts.
+  const listFile = path.join(dir, "hosts");
+  await fs.writeFile(listFile, "alpha\nbeta\n");
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: listFile }, dir, err), ["alpha", "beta"]);
+});
+
+test("main resumes a local session without ever touching SSH", async () => {
+  let sshCalled = false;
+  let resumedCmd: string | null = null;
+  const code = await main(["--local", "--no-tmux"], {
+    home: os.tmpdir(),
+    readLocal: async () => ({ code: 0, stdout: SEARCH_READ, stderr: "" }),
+    ssh: async () => {
+      sshCalled = true;
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    localExec: async () => ({ code: 0, stdout: "DIR_OK\nBRANCH=main\nCOMMIT=\n", stderr: "" }),
+    localResume: async (cmd) => {
+      resumedCmd = cmd;
+      return 0;
+    },
+    pick: async () => 1,
+    out: () => {},
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(code, 0);
+  assert.equal(sshCalled, false, "local resume must not use ssh");
+  assert.ok(resumedCmd && (resumedCmd as string).includes("opencode -s 'ses_hit'"), resumedCmd ?? "no resume");
+});
+
+test("a `local` entry mixes this machine (direct) with SSH hosts", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bc-mix-"));
+  const hostsFile = path.join(dir, "hosts");
+  await fs.writeFile(hostsFile, "local\nalpha\n");
+  let localReads = 0;
+  const sshHosts: string[] = [];
+  const code = await main(["health", "--hosts", hostsFile], {
+    home: dir,
+    readLocal: async () => {
+      localReads++;
+      return { code: 0, stdout: SEARCH_READ, stderr: "" };
+    },
+    ssh: async (args) => {
+      sshHosts.push(args[args.length - 2]); // host is second-to-last arg
+      return { code: 0, stdout: SEARCH_READ, stderr: "" };
+    },
+    out: () => {},
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(localReads, 1, "local read once");
+  assert.deepEqual(sshHosts, ["alpha"], "alpha read over ssh, local was not");
+  assert.equal(code, 0);
 });
 
 // -- command dispatch ----------------------------------------------------------------

@@ -31,19 +31,26 @@ captured *at the moment you last worked*. No daemon, no listener, no background
 work. opencode exits, the plugin exits. Nothing new ever listens on a work
 machine.
 
-**2. A probe, on your laptop: `crumb`.** One run fans out a time-bounded read
-over SSH to every machine, merges the answers into a single picker sorted
-newest-first, and resumes your pick on its original machine over an
-interactive `ssh -t` — inside a named tmux session, so a dropped connection
-*detaches* instead of kills.
+**2. A probe, on your laptop: `crumb`.** One run reads every machine — the one
+it runs on directly, the rest over SSH — merges the answers into a single
+picker sorted newest-first, and resumes your pick on its original machine.
+Remote resumes go over an interactive `ssh -t` inside a named tmux session, so
+a dropped connection *detaches* instead of kills; a local resume is just a
+child process. With no host list, crumb still works — against this machine.
 
 ![Breadcrumb architecture](docs/readme-architecture.svg)
 
+Each machine keeps two files: `state.json` (the plugin's snapshot) and
+opencode's own `opencode.db`. crumb reads `state.json` for the sessions and
+stats `opencode.db` to tell whether the plugin is still live.
+
 Three constraints shaped the design:
 
-- **SSH is the only channel.** No new listener, no new service, no new attack
-  surface on work machines. Every access is initiated from the laptop with your
-  own credentials. Freshness is pull-model: as fresh as your last `crumb` run.
+- **SSH is the only channel to other machines.** No new listener, no new
+  service, no new attack surface on work machines. Every remote access is
+  initiated from the laptop with your own credentials (the local machine is
+  read straight off disk). Freshness is pull-model: as fresh as your last
+  `crumb` run.
 - **State is a snapshot, not a log.** One small file, rewritten whole and
   atomically (temp + fsync + rename), capped at 200 sessions. No spool, no
   queue, no offsets. If a machine is down, `crumb` says so and moves on.
@@ -124,13 +131,19 @@ or `node probe/crumb.ts <args>` (Node ≥ 23.6 or Bun; no build step).
 
 ### Your laptop (once)
 
-1. Create the host list, one SSH target per line (`#` comments ok; any
-   destination `ssh` accepts, including `~/.ssh/config` aliases):
+crumb needs no host list to see the machine it runs on — `crumb`, `crumb
+search`, and `crumb health` work immediately against this machine (read
+directly, no SSH). The host list is only for reaching *other* machines.
+
+1. To add other machines, create the host list, one SSH target per line (`#`
+   comments ok; any destination `ssh` accepts, including `~/.ssh/config`
+   aliases). Add a `local` entry to keep this machine in the mix too:
 
    ```sh
    mkdir -p ~/.config/breadcrumb
    cat > ~/.config/breadcrumb/hosts <<'EOF'
    # my machines
+   local            # this machine, read directly (no SSH)
    build-01
    office-mac
    devbox
@@ -165,12 +178,17 @@ beyond the destination (jump hosts, non-default ports, specific keys) in
 ## Usage
 
 ```sh
-crumb                           # read all hosts, pick a session, resume it
+crumb                           # read all hosts (or just this one), pick, resume
 crumb search ingress 502        # same, but only sessions matching every term
+crumb --local                   # this machine only, no SSH
 crumb health                    # per-machine health, then exit
 crumb install                   # enroll the plugin on this machine
 ```
 
+- **No host list needed for the local machine.** With no `~/.config/breadcrumb/hosts`
+  (or with `--local`, or a `local` entry in the list), crumb reads this
+  machine's `state.json` straight off disk and resumes with a plain child
+  process — no SSH involved. Add hosts to fan out to other machines.
 - Reads every host concurrently (per-host `ConnectTimeout=3s`, overall
   deadline 10s); unreachable hosts never block the run.
 - Merges all sessions, most-recent first, and shows a picker
@@ -206,6 +224,7 @@ Resume options (also accepted after `crumb health`, where relevant):
 | Flag | Default | Meaning |
 |---|---|---|
 | `--hosts <file>` | `~/.config/breadcrumb/hosts` | alternate host list |
+| `--local` | — | read only this machine, directly (no SSH) |
 | `--plain` | — | force the numbered list even if `fzf` is installed |
 | `--no-tmux` | — | resume without the tmux wrapper |
 | `--deadline <ms>` | `10000` | overall read deadline |
