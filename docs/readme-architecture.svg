@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="320" viewBox="0 0 780 320" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Breadcrumb architecture: the crumb probe on your laptop reads each work machine's state.json over ssh and resumes a session over ssh -t; the breadcrumb plugin inside opencode writes state.json.">
+  <rect width="780" height="320" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-start">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <!-- deployment groups -->
+  <rect x="40" y="70" width="220" height="200" rx="6" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="54" y="92" font-size="14" font-weight="700" fill="#6b7280">Laptop</text>
+
+  <rect x="440" y="50" width="300" height="250" rx="6" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="454" y="72" font-size="14" font-weight="700" fill="#6b7280">Work machine (×N)</text>
+
+  <!-- edges (drawn before boxes so heads sit on the borders) -->
+  <!-- resume -->
+  <polyline points="230,150 360,150 360,125 470,125" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="300" y="142" font-size="12" fill="#374151" text-anchor="middle">ssh -t: resume</text>
+  <!-- read -->
+  <polyline points="230,196 360,196 360,235 480,235" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="300" y="212" font-size="12" fill="#374151" text-anchor="middle">ssh: cat state.json</text>
+  <!-- plugin writes state -->
+  <polyline points="590,160 590,200" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="600" y="184" font-size="12" fill="#374151">writes (atomic)</text>
+
+  <!-- crumb probe -->
+  <rect x="70" y="140" width="160" height="66" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+  <text x="150" y="178" font-size="14" font-weight="600" fill="#1e293b" text-anchor="middle">crumb (probe)</text>
+
+  <!-- opencode + plugin -->
+  <rect x="470" y="90" width="240" height="70" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
+  <text x="590" y="119" font-size="14" font-weight="600" fill="#065f46" text-anchor="middle">opencode</text>
+  <text x="590" y="140" font-size="13" fill="#047857" text-anchor="middle">+ breadcrumb plugin</text>
+
+  <!-- state.json -->
+  <rect x="480" y="200" width="220" height="70" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
+  <text x="590" y="230" font-size="14" font-weight="600" fill="#7c2d12" text-anchor="middle">state.json</text>
+  <text x="590" y="252" font-size="11" fill="#9a3412" text-anchor="middle">~/.local/share/breadcrumb/</text>
+</svg>

@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Cross-machine capture and rehydration of opencode sessions (BRC-SPEC-002).",
+  "bin": {
+    "crumb": "probe/crumb.ts"
+  },
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",

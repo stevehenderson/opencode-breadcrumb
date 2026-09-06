@@ -28,8 +28,8 @@ Two parts. Zero moving pieces.
 runs, listens to session lifecycle events, and atomically rewrites one small
 JSON file: recent sessions, each with the git state — branch, HEAD, dirty —
 captured *at the moment you last worked*. No daemon, no listener, no background
-work. opencode exits, the plugin exits. (Constraint C1: nothing new ever
-listens on a work machine.)
+work. opencode exits, the plugin exits. Nothing new ever listens on a work
+machine.
 
 **2. A probe, on your laptop: `crumb`.** One run fans out a time-bounded read
 over SSH to every machine, merges the answers into a single picker sorted
@@ -37,13 +37,7 @@ newest-first, and resumes your pick on its original machine over an
 interactive `ssh -t` — inside a named tmux session, so a dropped connection
 *detaches* instead of kills.
 
-```
-laptop                      work machines (N)
-┌─────────────┐   ssh ────► ┌────────────────────────────┐
-│ crumb (probe)│  ssh -t ◄── │ opencode + breadcrumb plugin│
-└─────────────┘  resume     │  └─ ~/.local/share/breadcrumb/state.json
-                            └────────────────────────────┘
-```
+![Breadcrumb architecture](docs/readme-architecture.svg)
 
 Three constraints shaped the design:
 
@@ -64,9 +58,9 @@ validation on both sides, unknown schemas rejected rather than misparsed, and
 every state-derived value shell-quoted before it becomes a remote command. A
 tampered state file can mislead the picker; it cannot inject.
 
-Full specification: [`docs/breadcrumb-spec-v2.md`](docs/breadcrumb-spec-v2.md)
-(BRC-SPEC-002). This repository implements **M1** (plugin + probe, live-read
-only). M2 (local cache), M3 (timeline UI), and M4 (dispatch) are not built yet.
+Full specification: [`docs/breadcrumb-spec-v2.md`](docs/breadcrumb-spec-v2.md).
+This repository implements the plugin and probe with live reads only; a local
+cache, timeline UI, and remote dispatch are not built yet.
 
 ## Requirements
 
@@ -81,28 +75,45 @@ only). M2 (local cache), M3 (timeline UI), and M4 (dispatch) are not built yet.
 ## Layout
 
 ```
-shared/state.ts       state file types + parse/merge (§5) — single schema source
-plugin/breadcrumb.ts  opencode plugin, one file (§6, §8)
-probe/crumb.ts        the `crumb` CLI (§7)
-scripts/install.mjs   enrollment: copies the plugin into ~/.config/opencode/plugins/
+shared/state.ts       state file types + parse/merge — single schema source
+plugin/breadcrumb.ts  opencode plugin, one file
+probe/crumb.ts        the `crumb` CLI (resume, health, install)
+scripts/install.mjs   enrollment wrapper (same as `crumb install`)
 test/                 node:test suite (unit + fake-ssh end-to-end)
 docs/                 the spec and its figures
 ```
 
 ## Setup
 
+### The `crumb` command (once, wherever you run it)
+
+`crumb` is the single entry point for every operation — resume, health, and
+plugin install. Put it on your `PATH`:
+
+```sh
+git clone https://github.com/stevehenderson/opencode-breadcrumb
+cd opencode-breadcrumb
+npm install
+npm link            # or: npm install -g .   → `crumb` on PATH
+```
+
+Now `crumb`, `crumb health`, and `crumb install` all work. Prefer not to
+install globally? Every example below also runs as `npm run crumb -- <args>`
+or `node probe/crumb.ts <args>` (Node ≥ 23.6 or Bun; no build step).
+
 ### Each work machine (minutes)
 
-1. Install the plugin:
+1. Enroll the plugin (from a checkout on that machine):
 
    ```sh
-   node scripts/install.mjs        # or: npm run install:plugin
+   crumb install                   # or: node scripts/install.mjs
    ```
 
    This copies `plugin/breadcrumb.ts` to `~/.config/opencode/plugins/breadcrumb.ts`
    and `shared/state.ts` to `~/.config/opencode/plugins/shared/state.ts`.
    (opencode's plugin discovery is non-recursive, hence the two files; the
    plugin locates the shared module at runtime and needs no build step.)
+   Pass `--dest <dir>` to enroll into a non-default plugin directory.
 
 2. Start opencode once in any project. The plugin creates
    `~/.local/share/breadcrumb/` (mode 0700), the machine id (UUID, stable
@@ -137,7 +148,9 @@ docs/                 the spec and its figures
 ## Usage
 
 ```sh
-node probe/crumb.ts             # or: bun probe/crumb.ts   (npm run crumb)
+crumb                           # read all hosts, pick a session, resume it
+crumb health                    # per-machine health, then exit
+crumb install                   # enroll the plugin on this machine
 ```
 
 - Reads every host concurrently (per-host `ConnectTimeout=3s`, overall
@@ -164,25 +177,29 @@ node probe/crumb.ts             # or: bun probe/crumb.ts   (npm run crumb)
 
 ### Options
 
+Resume options (also accepted after `crumb health`, where relevant):
+
 | Flag | Default | Meaning |
 |---|---|---|
-| `--health` | — | print per-machine health and exit (reachability, last write, live/STALE, plugin version); exit 1 if any host is unreachable |
 | `--hosts <file>` | `~/.config/breadcrumb/hosts` | alternate host list |
 | `--plain` | — | force the numbered list even if `fzf` is installed |
 | `--no-tmux` | — | resume without the tmux wrapper |
 | `--deadline <ms>` | `10000` | overall read deadline |
 | `--connect <ms>` | `3000` | per-host SSH `ConnectTimeout` |
 
+`crumb install` takes `--dest <dir>` (default `~/.config/opencode/plugins`).
+`crumb health` prints reachability, last write, live/STALE, and plugin version,
+then exits 1 if any host is unreachable. (`crumb --health` is an accepted alias.)
+
 Exit codes: `0` resumed / all reachable; `1` cancelled, no sessions, resume
-failed, or (for `--health`) some host unreachable; `2` configuration error.
+failed, or (for `crumb health`) some host unreachable; `2` configuration error.
 
 ### Liveness
 
 For each reachable host the probe compares `state.json`'s `written_at` with
 the mtime of `~/.local/share/opencode/opencode.db` read in the same SSH
 round. If the database is more than an hour newer than the state file, the
-plugin is presumed dead and the machine is flagged `STALE` in `--health`
-(spec FR-PROBE-070).
+plugin is presumed dead and the machine is flagged `STALE` in `crumb health`.
 
 ## State file format
 
@@ -222,8 +239,8 @@ read an existing file (e.g. a newer schema) refuses to clobber it.
   titles, paths, and git refs — no transcripts.
 - All state-derived values are shell-quoted when composing remote commands
   (a tampered state file cannot inject commands at resume time).
-- Residual risk per spec §10: an attacker who already owns a machine's user
-  account could plant a misleading state file on that machine only.
+- Residual risk: an attacker who already owns a machine's user account could
+  plant a misleading state file on that machine only.
 
 ## Development
 
@@ -238,19 +255,19 @@ The test suite runs the real `crumb` CLI as a subprocess against a fake
 read→merge→pick→precheck→resume path is exercised end-to-end without any
 network. The plugin is tested against a temp `$HOME` with stub and real git.
 
-### Spec notes (resolved open items)
+### Implementation notes
 
-- **OI-1**: `opencode -s <session_id>` is the correct resume flag on
-  1.18.29 (`--session`, "session id to continue"); the default launch is
+- `opencode -s <session_id>` is the resume flag on 1.18.29 (`--session`,
+  "session id to continue"); the default launch is
   `cd <dir> && opencode -s <session_id>`.
-- **OI-2**: on 1.18.x the general `event` hook receives
-  `session.created` / `session.updated` / `session.deleted`
-  (`properties.info: Session {id, title, directory, …}`), `session.idle`
-  (`properties.sessionID`), `message.updated` (`properties.info: Message`),
-  and `message.part.updated` (`properties.part: Part`). The plugin uses the
-  general hook and defensive extraction, per FR-PLUGIN-010.
-- **OI-3**: proposed numbers are implemented as constants — 5 s message-write
-  throttle, 3 s `ConnectTimeout`, 10 s run deadline, 1 h staleness — each
-  flagged in the source and most adjustable via CLI flags.
-- Probe runner: the spec suggests Bun; the code uses only `node:` builtins so
-  it runs identically on Bun or Node ≥ 23.6 (no build step either way).
+- On 1.18.x the general `event` hook receives `session.created` /
+  `session.updated` / `session.deleted` (`properties.info: Session {id, title,
+  directory, …}`), `session.idle` (`properties.sessionID`), `message.updated`
+  (`properties.info: Message`), and `message.part.updated`
+  (`properties.part: Part`). The plugin uses the general hook and extracts
+  defensively, because event shapes have changed across opencode versions.
+- The tunable numbers are constants in the source — 5 s message-write throttle,
+  3 s `ConnectTimeout`, 10 s run deadline, 1 h staleness — most adjustable via
+  CLI flags.
+- The probe uses only `node:` builtins, so it runs identically on Bun or
+  Node ≥ 23.6 (no build step either way).
