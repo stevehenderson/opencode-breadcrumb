@@ -21,13 +21,17 @@ import {
   gitDiffs,
   installPlugin,
   isLocalHost,
+  isOpencodeSessionId,
   main,
   parseArgs,
+  parseCleanArgs,
   parseHosts,
   parseInstallArgs,
   parsePrecheck,
   parseReadOutput,
   parseSearchArgs,
+  planClean,
+  runClean,
   pickWithFzf,
   readAllHosts,
   readHostArgs,
@@ -42,7 +46,7 @@ import {
   type HostRead,
   type SshResult,
 } from "../probe/crumb.ts";
-import { type BreadcrumbState, type MergedSession } from "../shared/state.ts";
+import { type BreadcrumbState, type MergedSession, type SessionSnapshot } from "../shared/state.ts";
 
 function merged(overrides: Partial<MergedSession> = {}): MergedSession {
   return {
@@ -588,6 +592,99 @@ test("main resumes a local session without ever touching SSH", async () => {
   assert.equal(code, 0);
   assert.equal(sshCalled, false, "local resume must not use ssh");
   assert.ok(resumedCmd && (resumedCmd as string).includes("opencode -s 'ses_hit'"), resumedCmd ?? "no resume");
+});
+
+// -- clean (prune this machine's state) ----------------------------------------------
+
+function sess(id: string): SessionSnapshot {
+  return {
+    session_id: id,
+    title: null,
+    directory: "/tmp",
+    git_branch: null,
+    git_commit: null,
+    git_dirty: false,
+    updated_at: "2026-09-06T12:00:00Z",
+  };
+}
+
+async function writeLocalState(prefix: string, sessions: SessionSnapshot[]): Promise<{ home: string; file: string }> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const dir = path.join(home, ".local", "share", "breadcrumb");
+  await fs.mkdir(dir, { recursive: true });
+  const state = { schema: 1, machine_id: "m", hostname: "h", written_at: "2026-09-06T12:00:00Z", plugin_version: "0.1.0", sessions };
+  const file = path.join(dir, "state.json");
+  await fs.writeFile(file, JSON.stringify(state, null, 2));
+  return { home, file };
+}
+
+test("isOpencodeSessionId accepts ses_ ids and rejects artifacts", () => {
+  assert.ok(isOpencodeSessionId("ses_abc"));
+  assert.ok(!isOpencodeSessionId("msg_abc"));
+  assert.ok(!isOpencodeSessionId("prt_x"));
+  assert.ok(!isOpencodeSessionId(""));
+});
+
+test("parseCleanArgs handles --all/--dry-run; rejects unknown", () => {
+  assert.deepEqual(parseCleanArgs([]), { all: false, dryRun: false, help: false });
+  assert.deepEqual(parseCleanArgs(["--all", "-n"]), { all: true, dryRun: true, help: false });
+  assert.equal(parseCleanArgs(["--help"]).help, true);
+  assert.throws(() => parseCleanArgs(["--nope"]), /unknown option/);
+});
+
+test("planClean drops non-ses_ artifacts by default; --all drops everything", () => {
+  const sessions = [sess("ses_1"), sess("msg_2"), sess("ses_3"), sess("msg_4")];
+  const invalid = planClean(sessions, false);
+  assert.deepEqual(invalid.kept.map((s) => s.session_id), ["ses_1", "ses_3"]);
+  assert.deepEqual(invalid.removed.map((s) => s.session_id), ["msg_2", "msg_4"]);
+  const all = planClean(sessions, true);
+  assert.equal(all.kept.length, 0);
+  assert.equal(all.removed.length, 4);
+});
+
+test("runClean removes artifacts, keeps real sessions, leaves no temp files", async () => {
+  const { home, file } = await writeLocalState("bc-clean-", [sess("ses_a"), sess("msg_b"), sess("ses_c"), sess("msg_d")]);
+  const out: string[] = [];
+  const code = await runClean([], { home, out: (s) => out.push(s), err: () => {} });
+  assert.equal(code, 0);
+  const after = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.deepEqual(after.sessions.map((s: SessionSnapshot) => s.session_id), ["ses_a", "ses_c"]);
+  assert.match(out.join("\n"), /removed 2 entries, kept 2/);
+  const entries = await fs.readdir(path.dirname(file));
+  assert.deepEqual(entries.filter((e) => e.includes("tmp")), []);
+});
+
+test("runClean --dry-run writes nothing", async () => {
+  const { home, file } = await writeLocalState("bc-clean-dry-", [sess("ses_a"), sess("msg_b")]);
+  const before = await fs.readFile(file, "utf8");
+  const out: string[] = [];
+  const code = await runClean(["--dry-run"], { home, out: (s) => out.push(s) });
+  assert.equal(code, 0);
+  assert.equal(await fs.readFile(file, "utf8"), before, "file untouched");
+  assert.match(out.join("\n"), /would remove 1 entry, keep 1/);
+});
+
+test("runClean --all empties the session list", async () => {
+  const { home, file } = await writeLocalState("bc-clean-all-", [sess("ses_a"), sess("ses_b")]);
+  const code = await runClean(["--all"], { home, out: () => {} });
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")).sessions, []);
+});
+
+test("runClean with no state file is a no-op (exit 0)", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "bc-clean-none-"));
+  const out: string[] = [];
+  const code = await runClean([], { home, out: (s) => out.push(s) });
+  assert.equal(code, 0);
+  assert.match(out.join("\n"), /nothing to clean/);
+});
+
+test("main clean routes to runClean", async () => {
+  const { home } = await writeLocalState("bc-clean-main-", [sess("ses_a"), sess("msg_b")]);
+  const out: string[] = [];
+  const code = await main(["clean", "--dry-run"], { home, out: (s) => out.push(s) });
+  assert.equal(code, 0);
+  assert.match(out.join("\n"), /would remove 1 entry/);
 });
 
 test("a `local` entry mixes this machine (direct) with SSH hosts", async () => {

@@ -183,6 +183,7 @@ crumb search ingress 502        # same, but only sessions matching every term
 crumb --local                   # this machine only, no SSH
 crumb health                    # per-machine health, then exit
 crumb install                   # enroll the plugin on this machine
+crumb clean                     # prune stale/invalid entries on this machine
 ```
 
 - **No host list needed for the local machine.** With no `~/.config/breadcrumb/hosts`
@@ -234,6 +235,13 @@ Resume options (also accepted after `crumb health`, where relevant):
 `crumb install` takes `--dest <dir>` (default `~/.config/opencode/plugins`).
 `crumb health` prints reachability, last write, live/STALE, and plugin version,
 then exits 1 if any host is unreachable. (`crumb --health` is an accepted alias.)
+
+`crumb clean` prunes **this machine's** state file (crumb never writes another
+machine's files — to clean a remote, run it there). By default it removes only
+entries that are not real opencode sessions — stray artifacts, e.g. from an
+older plugin version; `--all` wipes every entry (a full reset), and `--dry-run`
+shows what would go without writing. If pruned entries reappear, restart
+opencode so the current plugin is the one running.
 
 Exit codes: `0` resumed / all reachable; `1` cancelled, no sessions, resume
 failed, or (for `crumb health`) some host unreachable; `2` configuration error.
