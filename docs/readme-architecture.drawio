@@ -1,0 +1,48 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="readme-arch" name="Architecture">
+    <mxGraphModel dx="900" dy="600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="780" pageHeight="360" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="grp-laptop" value="Laptop" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;dashed=1;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="220" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="grp-machine" value="Work machine (xN)" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;dashed=1;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="50" width="300" height="250" as="geometry" />
+        </mxCell>
+
+        <mxCell id="comp-crumb" value="crumb (probe)" style="html=1;dropTarget=0;whiteSpace=wrap;shape=component;align=center;fillColor=#eef2ff;strokeColor=#4f46e5;" vertex="1" parent="1">
+          <mxGeometry x="70" y="140" width="160" height="66" as="geometry" />
+        </mxCell>
+
+        <mxCell id="comp-stack" value="opencode&#10;+ breadcrumb plugin" style="html=1;dropTarget=0;whiteSpace=wrap;shape=component;align=center;fillColor=#ecfdf5;strokeColor=#059669;" vertex="1" parent="1">
+          <mxGeometry x="470" y="90" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="doc-state" value="state.json&#10;~/.local/share/breadcrumb/" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff7ed;strokeColor=#ea580c;" vertex="1" parent="1">
+          <mxGeometry x="480" y="200" width="220" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-write" value="writes (atomic)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="comp-stack" target="doc-state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-read" value="ssh: cat state.json" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=1;exitY=0.65;entryX=0;entryY=0.5;" edge="1" parent="1" source="comp-crumb" target="doc-state">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="360" y="185" />
+              <mxPoint x="360" y="235" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-resume" value="ssh -t: resume" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=1;exitY=0.35;entryX=0;entryY=0.5;" edge="1" parent="1" source="comp-crumb" target="comp-stack">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="360" y="163" />
+              <mxPoint x="360" y="125" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -2,9 +2,11 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fsSync from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  PLUGIN_SOURCES,
   buildLaunchCommand,
   buildPickerLines,
   buildPrecheckCommand,
@@ -12,10 +14,14 @@ import {
   buildRemoteCommand,
   classifyReads,
   collectSessions,
+  defaultPluginDir,
   formatHealth,
   gitDiffs,
+  installPlugin,
+  main,
   parseArgs,
   parseHosts,
+  parseInstallArgs,
   parsePrecheck,
   parseReadOutput,
   pickWithFzf,
@@ -23,6 +29,7 @@ import {
   readHostArgs,
   resumeArgs,
   shQuote,
+  splitCommand,
   tmuxSessionName,
   type HostRead,
   type SshResult,
@@ -378,4 +385,74 @@ test("parseArgs rejects unknown flags and bad numbers", () => {
 
 test("buildReadCommand is deterministic", () => {
   assert.equal(buildReadCommand(), buildReadCommand());
+});
+
+// -- command dispatch ----------------------------------------------------------------
+
+test("splitCommand peels a leading subcommand, else defaults to resume", () => {
+  assert.deepEqual(splitCommand(["health", "--hosts", "/h"]), { cmd: "health", rest: ["--hosts", "/h"] });
+  assert.deepEqual(splitCommand(["install", "--dest", "/d"]), { cmd: "install", rest: ["--dest", "/d"] });
+  assert.deepEqual(splitCommand(["resume", "--plain"]), { cmd: "resume", rest: ["--plain"] });
+  // No subcommand: everything is resume args (flags never look like commands).
+  assert.deepEqual(splitCommand(["--plain", "--no-tmux"]), { cmd: "resume", rest: ["--plain", "--no-tmux"] });
+  assert.deepEqual(splitCommand(["--help"]), { cmd: "resume", rest: ["--help"] });
+  assert.deepEqual(splitCommand([]), { cmd: "resume", rest: [] });
+});
+
+test("main routes `health` through the resume path's --health alias", async () => {
+  let sawHealthFlag = false;
+  // A fake ssh that records nothing but returns unreachable; --health prints a
+  // table and exits 1 when a host is unreachable.
+  const lines: string[] = [];
+  const hostsFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "bc-disp-")), "hosts");
+  await fs.writeFile(hostsFile, "h1\n");
+  const code = await main(["health", "--hosts", hostsFile], {
+    ssh: async (args) => {
+      if (args.some((a) => a.includes("__BC_READ__"))) sawHealthFlag = true;
+      return { code: 255, stdout: "", stderr: "down" };
+    },
+    out: (s) => lines.push(s),
+    err: () => {},
+    now: () => Date.parse("2026-09-05T12:00:00Z"),
+  });
+  assert.equal(sawHealthFlag, true, "health must trigger the read fan-out");
+  assert.equal(code, 1, "unreachable host -> exit 1");
+  assert.ok(lines.join("\n").includes("HOST"), "health table printed");
+});
+
+// -- install / enrollment ------------------------------------------------------------
+
+test("PLUGIN_SOURCES copies the plugin and the shared module it imports", () => {
+  assert.deepEqual(PLUGIN_SOURCES.map(([, to]) => to), ["breadcrumb.ts", "shared/state.ts"]);
+});
+
+test("defaultPluginDir resolves under the given home", () => {
+  assert.equal(defaultPluginDir("/home/me"), path.join("/home/me", ".config", "opencode", "plugins"));
+});
+
+test("parseInstallArgs handles --dest and --help; rejects unknown", () => {
+  assert.deepEqual(parseInstallArgs(["--dest", "/d"]), { dest: "/d", help: false });
+  assert.equal(parseInstallArgs(["--help"]).help, true);
+  assert.throws(() => parseInstallArgs(["--dest"]), /missing value/);
+  assert.throws(() => parseInstallArgs(["--nope"]), /unknown option/);
+});
+
+test("installPlugin copies both files into the destination (installed layout)", async () => {
+  const dest = await fs.mkdtemp(path.join(os.tmpdir(), "bc-inst-"));
+  const log: string[] = [];
+  const res = await installPlugin({ dest, log: (s) => log.push(s) });
+  assert.equal(res.dest, dest);
+  assert.deepEqual(res.installed, ["breadcrumb.ts", "shared/state.ts"]);
+  assert.ok((await fs.stat(path.join(dest, "breadcrumb.ts"))).isFile());
+  assert.ok((await fs.stat(path.join(dest, "shared", "state.ts"))).isFile());
+  assert.deepEqual(log, ["installed breadcrumb.ts", "installed shared/state.ts"]);
+});
+
+test("main install routes to installPlugin and reports the destination", async () => {
+  const dest = await fs.mkdtemp(path.join(os.tmpdir(), "bc-main-inst-"));
+  const out: string[] = [];
+  const code = await main(["install", "--dest", dest], { out: (s) => out.push(s), err: () => {} });
+  assert.equal(code, 0);
+  assert.ok((await fs.stat(path.join(dest, "breadcrumb.ts"))).isFile());
+  assert.ok(out.join("\n").includes(dest), "reports where it enrolled");
 });
