@@ -112,6 +112,25 @@ export function extractSessionRef(event: EventLike, ctxDirectory: string): Sessi
   }
 }
 
+/**
+ * Join the text of a user message's parts into a single prompt string, or null.
+ * Fed by the `chat.message` hook (output.parts: Part[]); stays defensive about
+ * shape. Only `text` parts contribute — tool calls and reasoning are ignored.
+ */
+export function extractPromptText(parts: unknown): string | null {
+  if (!Array.isArray(parts)) return null;
+  const texts: string[] = [];
+  for (const part of parts) {
+    const p = asRecord(part);
+    if (p?.type === "text") {
+      const t = asString(p.text);
+      if (t) texts.push(t);
+    }
+  }
+  const joined = texts.join("\n").trim();
+  return joined === "" ? null : joined;
+}
+
 // ---------------------------------------------------------------------------
 // Git capture (FR-PLUGIN-030/031)
 
@@ -346,6 +365,8 @@ export interface PluginServiceOptions {
 
 export interface PluginService {
   handleEvent(event: EventLike): Promise<void>;
+  /** Record the latest user prompt as the session gist (from the chat.message hook). */
+  recordPrompt(sessionID: string, promptText: string): Promise<void>;
   getState(): BreadcrumbState;
   readonly stateDir: string;
   readonly machineId: string;
@@ -364,8 +385,10 @@ export async function createService(opts: PluginServiceOptions): Promise<PluginS
 
   // Last-known context per session, so events that only carry a session id
   // (idle, message) can still produce a complete snapshot.
-  const known = new Map<string, { title: string | null; directory: string }>();
-  for (const snap of state.sessions) known.set(snap.session_id, { title: snap.title, directory: snap.directory });
+  const known = new Map<string, { title: string | null; directory: string; lastPrompt: string | null }>();
+  for (const snap of state.sessions) {
+    known.set(snap.session_id, { title: snap.title, directory: snap.directory, lastPrompt: snap.last_prompt ?? null });
+  }
   const lastMessageWrite = new Map<string, number>();
 
   async function persist(next: BreadcrumbState): Promise<void> {
@@ -378,13 +401,15 @@ export async function createService(opts: PluginServiceOptions): Promise<PluginS
     const mem = known.get(ref.sessionID);
     const title = ref.title ?? mem?.title ?? null;
     const directory = ref.directory ?? mem?.directory ?? opts.directory;
-    known.set(ref.sessionID, { title, directory });
+    const lastPrompt = mem?.lastPrompt ?? null;
+    known.set(ref.sessionID, { title, directory, lastPrompt });
     const git = await captureGitState(directory, { bin: opts.gitBin });
     const snap: SessionSnapshot = {
       session_id: ref.sessionID,
       title,
       directory,
       ...git,
+      last_prompt: lastPrompt,
       updated_at: new Date(now()).toISOString(),
     };
     // Re-read from disk per update so concurrent opencode instances on this
@@ -393,12 +418,27 @@ export async function createService(opts: PluginServiceOptions): Promise<PluginS
     await persist(await upsertSnapshot(current, snap, now()));
   }
 
+  async function recordPrompt(sessionID: string, promptText: string): Promise<void> {
+    const gist = s.truncatePrompt(promptText);
+    if (gist === "") return;
+    const mem = known.get(sessionID) ?? { title: null, directory: opts.directory, lastPrompt: null };
+    known.set(sessionID, { ...mem, lastPrompt: gist });
+    await observe({ kind: "observe", sessionID, throttled: false });
+  }
+
   return {
     get stateDir() {
       return dir;
     },
     machineId,
     getState: () => state,
+    async recordPrompt(sessionID: string, promptText: string): Promise<void> {
+      try {
+        await recordPrompt(sessionID, promptText);
+      } catch {
+        // FR-PLUGIN-060: swallow all failures; never throw into opencode.
+      }
+    },
     async handleEvent(event: EventLike): Promise<void> {
       try {
         const ref = extractSessionRef(event, opts.directory);
@@ -431,6 +471,12 @@ const Breadcrumb: Plugin = async (ctx) => {
     return {
       event: async ({ event }) => {
         await service.handleEvent(event as unknown as EventLike);
+      },
+      // Fires when the user sends a message: capture the prompt as the gist.
+      "chat.message": async (input, output) => {
+        const sessionID = input?.sessionID ?? (output?.message as { sessionID?: string } | undefined)?.sessionID;
+        const text = extractPromptText(output?.parts);
+        if (sessionID && text) await service.recordPrompt(sessionID, text);
       },
     };
   } catch {

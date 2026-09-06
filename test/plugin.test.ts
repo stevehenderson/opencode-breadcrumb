@@ -12,6 +12,7 @@ import {
   createService,
   ensureMachineId,
   ensureStateDir,
+  extractPromptText,
   extractSessionRef,
   loadState,
   removeSnapshot,
@@ -357,6 +358,60 @@ test("service: message events are throttled to one write per 5s (FR-PLUGIN-042)"
   await msg();
   const afterWindow = (await readStateFile(svc.stateDir)).sessions[0].updated_at;
   assert.notEqual(afterWindow, afterFirst, "write after the 5s window must land");
+});
+
+test("extractPromptText joins text parts and ignores everything else", () => {
+  assert.equal(
+    extractPromptText([{ type: "text", text: "hello" }, { type: "tool", text: "x" }, { type: "text", text: "world" }]),
+    "hello\nworld",
+  );
+  assert.equal(extractPromptText([{ type: "reasoning", text: "thinking" }]), null);
+  assert.equal(extractPromptText([{ type: "text", text: "" }]), null);
+  assert.equal(extractPromptText([]), null);
+  assert.equal(extractPromptText("nope"), null);
+  assert.equal(extractPromptText(null), null);
+});
+
+test("service: recordPrompt stores the last user prompt as the gist and it sticks", async () => {
+  const home = await tmpDir("bc-prompt-");
+  const svc = await createService({ home, directory: "/w", gitBin: "/nonexistent/git-bc-test" });
+  await svc.handleEvent({ type: "session.created", properties: { info: { id: "ses_p", title: "t", directory: "/w" } } });
+  await svc.recordPrompt("ses_p", "  Fix the\n ingress   502 please ");
+  let st = await readStateFile(svc.stateDir);
+  assert.equal(st.sessions[0].last_prompt, "Fix the ingress 502 please");
+
+  // A later observation that carries no prompt keeps the recorded gist.
+  await svc.handleEvent({ type: "session.idle", properties: { sessionID: "ses_p" } });
+  st = await readStateFile(svc.stateDir);
+  assert.equal(st.sessions[0].last_prompt, "Fix the ingress 502 please");
+
+  // A fresh service loads the gist from disk into its known-context map.
+  const svc2 = await createService({ home, directory: "/w", gitBin: "/nonexistent/git-bc-test" });
+  await svc2.handleEvent({ type: "session.idle", properties: { sessionID: "ses_p" } });
+  st = await readStateFile(svc2.stateDir);
+  assert.equal(st.sessions[0].last_prompt, "Fix the ingress 502 please");
+});
+
+test("plugin entry: chat.message hook records the prompt gist", async () => {
+  const mod = await import("../plugin/breadcrumb.ts");
+  const home = await tmpDir("bc-chat-");
+  const oldHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const hooks = await mod.default.server({ directory: "/ctx/dir" } as never);
+    const chat = hooks["chat.message"] as (i: unknown, o: unknown) => Promise<void>;
+    assert.equal(typeof chat, "function");
+    await chat(
+      { sessionID: "ses_chat" },
+      { message: { role: "user", sessionID: "ses_chat" }, parts: [{ type: "text", text: "add a search command" }] },
+    );
+    const parsed = await readStateFile(path.join(home, ".local", "share", "breadcrumb"));
+    assert.equal(parsed.sessions[0].session_id, "ses_chat");
+    assert.equal(parsed.sessions[0].last_prompt, "add a search command");
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  }
 });
 
 test("service: session.deleted removes the snapshot", async () => {

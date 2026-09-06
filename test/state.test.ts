@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  MAX_PROMPT_LEN,
   SCHEMA_VERSION,
   StateParseError,
   mergeSessions,
   parseState,
   relativeAge,
   sanitizeSession,
+  truncatePrompt,
 } from "../shared/state.ts";
 
 function validSession(overrides: Record<string, unknown> = {}) {
@@ -84,6 +86,41 @@ test("sanitizeSession coerces absent optional fields to null/false", () => {
   assert.equal(s.git_branch, null);
   assert.equal(s.git_commit, null);
   assert.equal(s.git_dirty, false);
+  assert.equal(s.last_prompt, null);
+});
+
+test("truncatePrompt collapses whitespace and clips with an ellipsis", () => {
+  assert.equal(truncatePrompt("  fix   the\n\n ingress 502  "), "fix the ingress 502");
+  const long = "a".repeat(MAX_PROMPT_LEN + 50);
+  const t = truncatePrompt(long);
+  assert.equal(t.length, MAX_PROMPT_LEN);
+  assert.ok(t.endsWith("…"));
+  assert.equal(truncatePrompt("hi", 10), "hi");
+});
+
+test("sanitizeSession reads and truncates last_prompt; empty/non-string -> null", () => {
+  const s = sanitizeSession({
+    session_id: "s1",
+    directory: "/d",
+    updated_at: "2026-01-01T00:00:00Z",
+    last_prompt: "  refactor the\tauth module  ",
+  });
+  assert.equal(s.last_prompt, "refactor the auth module");
+  const long = sanitizeSession({
+    session_id: "s2",
+    directory: "/d",
+    updated_at: "2026-01-01T00:00:00Z",
+    last_prompt: "x".repeat(MAX_PROMPT_LEN + 20),
+  });
+  assert.equal(long.last_prompt?.length, MAX_PROMPT_LEN);
+  assert.equal(
+    sanitizeSession({ session_id: "s3", directory: "/d", updated_at: "2026-01-01T00:00:00Z", last_prompt: "" }).last_prompt,
+    null,
+  );
+  assert.equal(
+    sanitizeSession({ session_id: "s4", directory: "/d", updated_at: "2026-01-01T00:00:00Z", last_prompt: 42 }).last_prompt,
+    null,
+  );
 });
 
 test("sanitizeSession rejects non-absolute directory and empty session id", () => {
