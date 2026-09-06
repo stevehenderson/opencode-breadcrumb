@@ -24,6 +24,7 @@ import {
   mergeSessions,
   parseState,
   relativeAge,
+  truncatePrompt,
 } from "../shared/state.ts";
 
 const DEFAULT_DEADLINE_MS = 10_000; // FR-PROBE-030 (OI-3)
@@ -269,13 +270,27 @@ export function formatHealth(statuses: HostStatus[], nowMs: number = Date.now())
 // ---------------------------------------------------------------------------
 // Picker (FR-PROBE-080/081)
 
-/** One picker row: machine, age, branch + dirty marker, directory, title. */
+/** One picker row: machine, age, branch + dirty marker, directory, title, gist. */
 export function formatSessionLine(s: MergedSession, nowMs: number = Date.now()): string {
   const branch = s.git_branch ?? "no-branch";
   const dirty = s.git_dirty ? "*" : "";
   const title = s.title ?? "(untitled)";
   const machine = s.hostname !== "" ? s.hostname : s.host;
-  return `${machine}  ${relativeAge(s.updated_at, nowMs)}  ${branch}${dirty}  ${s.directory}  ${title}`;
+  const gist = s.last_prompt ? `  » ${truncatePrompt(s.last_prompt, 80)}` : "";
+  return `${machine}  ${relativeAge(s.updated_at, nowMs)}  ${branch}${dirty}  ${s.directory}  ${title}${gist}`;
+}
+
+/**
+ * A session matches when every term appears (case-insensitively) somewhere in
+ * its searchable text: machine, title, branch, directory, and the prompt gist.
+ * All terms must match (AND) so extra terms narrow the result.
+ */
+export function sessionMatches(s: MergedSession, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  const hay = [s.hostname, s.host, s.title ?? "", s.git_branch ?? "", s.directory, s.last_prompt ?? ""]
+    .join(" ")
+    .toLowerCase();
+  return terms.every((t) => hay.includes(t.toLowerCase()));
 }
 
 export function buildPickerLines(sessions: MergedSession[], nowMs: number = Date.now()): string[] {
@@ -425,6 +440,8 @@ export interface CrumbOptions {
   noTmux: boolean;
   deadlineMs: number;
   connectMs: number;
+  /** Keyword filter applied to the merged sessions (repeatable; all must match). */
+  match: string[];
   help: boolean;
 }
 
@@ -436,6 +453,7 @@ export function parseArgs(argv: string[]): CrumbOptions {
     noTmux: false,
     deadlineMs: DEFAULT_DEADLINE_MS,
     connectMs: DEFAULT_CONNECT_MS,
+    match: [],
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -464,6 +482,9 @@ export function parseArgs(argv: string[]): CrumbOptions {
       case "--connect":
         opts.connectMs = Number(next());
         break;
+      case "--match":
+        opts.match.push(next());
+        break;
       case "--help":
       case "-h":
         opts.help = true;
@@ -481,6 +502,7 @@ export const HELP_TEXT = `crumb — capture and resume opencode sessions across 
 
 Usage:
   crumb [resume]        read all hosts, pick a session, resume it over SSH
+  crumb search <terms>  resume, but only among sessions matching every term
   crumb health          show per-machine health (reachability, staleness)
   crumb install         enroll the breadcrumb plugin on this machine
   crumb --help
@@ -491,6 +513,10 @@ Resume options:
   --no-tmux             do not wrap the resume in a tmux session
   --deadline <ms>       overall read deadline (default 10000)
   --connect <ms>        per-host SSH ConnectTimeout (default 3000)
+  --match <term>        keep only sessions matching <term> (repeatable; all
+                        must match). Searches machine, title, branch,
+                        directory, and the last-prompt gist. "crumb search"
+                        is shorthand for positional terms.
 
 Install options:
   --dest <dir>          plugin directory (default ~/.config/opencode/plugins)
@@ -603,7 +629,13 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
     return 1;
   }
 
-  const lines = buildPickerLines(sessions, now());
+  const list = opts.match.length > 0 ? sessions.filter((s) => sessionMatches(s, opts.match)) : sessions;
+  if (list.length === 0) {
+    out(`no sessions match: ${opts.match.join(" ")}`);
+    return 1;
+  }
+
+  const lines = buildPickerLines(list, now());
   const pick =
     deps.pick ??
     (opts.plain || !(deps.fzfAvailable ?? fzfAvailable)()
@@ -624,7 +656,7 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
     err("crumb: selection cancelled");
     return 1; // FR-PROBE-081: non-zero, no side effects
   }
-  const sel = sessions[choice - 1];
+  const sel = list[choice - 1];
 
   out(`resuming ${sel.session_id} on ${sel.host} — ${sel.directory}`);
 
@@ -765,7 +797,7 @@ export async function runInstall(argv: string[], deps: CrumbDeps = {}): Promise<
 // ---------------------------------------------------------------------------
 // Command dispatch
 
-export const SUBCOMMANDS = new Set(["resume", "health", "install"]);
+export const SUBCOMMANDS = new Set(["resume", "health", "install", "search"]);
 
 /** Peel off a leading subcommand; default to `resume` when none is given. */
 export function splitCommand(argv: string[]): { cmd: string; rest: string[] } {
@@ -774,11 +806,30 @@ export function splitCommand(argv: string[]): { cmd: string; rest: string[] } {
   return { cmd: "resume", rest: argv };
 }
 
+/**
+ * Split `crumb search <terms…> [flags]` into search terms and passthrough flags:
+ * everything up to the first `-…` token is a term, the rest are resume flags.
+ */
+export function parseSearchArgs(rest: string[]): { terms: string[]; flags: string[] } {
+  const firstFlag = rest.findIndex((a) => a.startsWith("-"));
+  if (firstFlag === -1) return { terms: rest, flags: [] };
+  return { terms: rest.slice(0, firstFlag), flags: rest.slice(firstFlag) };
+}
+
 export async function main(argv: string[], deps: CrumbDeps = {}): Promise<number> {
   const { cmd, rest } = splitCommand(argv);
   if (cmd === "install") return runInstall(rest, deps);
   // `crumb health` is sugar for the resume path's --health (kept as an alias).
   if (cmd === "health") return runCrumb(["--health", ...rest], deps);
+  if (cmd === "search") {
+    const { terms, flags } = parseSearchArgs(rest);
+    if (terms.length === 0) {
+      (deps.err ?? ((s: string) => process.stderr.write(s + "\n")))("crumb: search needs at least one term");
+      return 2;
+    }
+    // Route terms through the resume path's repeatable --match filter.
+    return runCrumb([...terms.flatMap((t) => ["--match", t]), ...flags], deps);
+  }
   return runCrumb(rest, deps);
 }
 

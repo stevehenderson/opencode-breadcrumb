@@ -118,8 +118,9 @@ or `node probe/crumb.ts <args>` (Node ≥ 23.6 or Bun; no build step).
 2. Start opencode once in any project. The plugin creates
    `~/.local/share/breadcrumb/` (mode 0700), the machine id (UUID, stable
    across hostname changes and reinstalls), and the first `state.json`.
-   Every session start, idle, and end rewrites the file atomically
-   (temp + fsync + rename), newest-first, capped at 200 entries.
+   Every session start, idle, prompt, and end rewrites the file atomically
+   (temp + fsync + rename), newest-first, capped at 200 entries. Each message
+   you send updates that session's gist (its `last_prompt`).
 
 ### Your laptop (once)
 
@@ -165,6 +166,7 @@ beyond the destination (jump hosts, non-default ports, specific keys) in
 
 ```sh
 crumb                           # read all hosts, pick a session, resume it
+crumb search ingress 502        # same, but only sessions matching every term
 crumb health                    # per-machine health, then exit
 crumb install                   # enroll the plugin on this machine
 ```
@@ -175,13 +177,19 @@ crumb install                   # enroll the plugin on this machine
   (`fzf` when present, numbered list otherwise):
 
   ```
-   1) build-01  3m  fix-ingress-502*  /home/dev/src/platform  fix ingress 502 on staging
-   2) office-mac  2h  main  /Users/me/dev/app  refactor auth
+   1) build-01  3m  fix-ingress-502*  /home/dev/src/platform  untitled  » fix the ingress 502 on staging
+   2) office-mac  2h  main  /Users/me/dev/app  refactor auth  » extract the token refresh into its own module
    3) build-01  1d  no-branch  /home/dev/scratch  untitled
   select [1-3] (empty cancels):
   ```
 
-  `*` marks a dirty working tree at last observation.
+  `*` marks a dirty working tree at last observation. `»` is the session's
+  gist — the last prompt you sent — which the plugin records automatically.
+- **Search** (`crumb search <terms>` or `--match <term>`, repeatable) keeps
+  only sessions where every term appears — case-insensitively — in the machine,
+  title, branch, directory, or the gist. With `fzf` you can also just type to
+  filter the full list interactively; `search` narrows before the picker even
+  opens (and works with `--plain`/scripts).
 - Before resuming, `crumb` re-checks the directory and git state over SSH.
   If branch or commit differ from the snapshot, it shows the difference and
   asks for confirmation — it never checks out, stashes, or cleans anything.
@@ -202,6 +210,7 @@ Resume options (also accepted after `crumb health`, where relevant):
 | `--no-tmux` | — | resume without the tmux wrapper |
 | `--deadline <ms>` | `10000` | overall read deadline |
 | `--connect <ms>` | `3000` | per-host SSH `ConnectTimeout` |
+| `--match <term>` | — | keep only sessions matching `<term>`; repeatable, all must match (`crumb search <terms>` is shorthand) |
 
 `crumb install` takes `--dest <dir>` (default `~/.config/opencode/plugins`).
 `crumb health` prints reachability, last write, live/STALE, and plugin version,
@@ -237,11 +246,18 @@ plugin is presumed dead and the machine is flagged `STALE` in `crumb health`.
       "git_branch": "fix-ingress-502",
       "git_commit": "a1b2c3d4",
       "git_dirty": true,
+      "last_prompt": "fix the ingress 502 on staging",
       "updated_at": "2026-09-05T14:22:31Z"
     }
   ]
 }
 ```
+
+`last_prompt` is the session's gist — the most recent user prompt, whitespace
+collapsed and clipped to 200 characters. The plugin captures it from opencode's
+`chat.message` hook each time you send a message; it holds no other transcript
+content. It is optional: state files written before the field, and sessions the
+plugin never saw a prompt for, simply omit it (read as absent).
 
 Both sides share one typed schema in `shared/state.ts`; the probe rejects
 unknown `schema` values and warns instead of misparsing. A plugin that cannot
@@ -252,7 +268,8 @@ read an existing file (e.g. a newer schema) refuses to clobber it.
 - No listener or new service is ever started on work machines; SSH is the
   only channel, initiated from the laptop with your own credentials.
 - State file and its directory are owner-only (0700/0600). The file holds
-  titles, paths, and git refs — no transcripts.
+  titles, paths, git refs, and a one-line gist (your last prompt, clipped to
+  200 chars) — no full transcripts.
 - All state-derived values are shell-quoted when composing remote commands
   (a tampered state file cannot inject commands at resume time).
 - Residual risk: an attacker who already owns a machine's user account could
