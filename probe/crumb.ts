@@ -586,6 +586,7 @@ Usage:
   crumb search <terms>  resume, but only among sessions matching every term
   crumb health          show per-machine health (reachability, staleness)
   crumb install         enroll the breadcrumb plugin on this machine
+  crumb clean           prune stale/invalid entries from this machine's state
   crumb --help
 
 Resume options:
@@ -602,6 +603,11 @@ Resume options:
 
 Install options:
   --dest <dir>          plugin directory (default ~/.config/opencode/plugins)
+
+Clean options (operates on this machine's state file only):
+  --all                 remove every session entry (full reset)
+  --dry-run, -n         show what would be removed, write nothing
+  (default: remove only entries that are not real opencode sessions)
 
 Host list format: one SSH target per line; # comments and blank lines ok.
 With no host list, crumb reads this machine only. A "local" entry in the list
@@ -920,9 +926,125 @@ export async function runInstall(argv: string[], deps: CrumbDeps = {}): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// Clean: prune crumb's own local state file
+//
+// Operates on this machine only — crumb never writes another machine's files
+// (to clean a remote, run `crumb clean` there). Default mode drops entries that
+// are not real opencode sessions (e.g. artifacts a buggy plugin version wrote);
+// --all wipes every session, keeping the file and machine id.
+
+/** opencode session ids look like `ses_…`; anything else in state is an artifact. */
+export function isOpencodeSessionId(id: string): boolean {
+  return id.startsWith("ses_");
+}
+
+export interface CleanOptions {
+  all: boolean;
+  dryRun: boolean;
+  help: boolean;
+}
+
+export function parseCleanArgs(argv: string[]): CleanOptions {
+  const opts: CleanOptions = { all: false, dryRun: false, help: false };
+  for (const a of argv) {
+    switch (a) {
+      case "--all":
+        opts.all = true;
+        break;
+      case "--dry-run":
+      case "-n":
+        opts.dryRun = true;
+        break;
+      case "--help":
+      case "-h":
+        opts.help = true;
+        break;
+      default:
+        throw new Error(`unknown option: ${a}`);
+    }
+  }
+  return opts;
+}
+
+/** Partition sessions into those kept and those removed for the given mode. */
+export function planClean(
+  sessions: SessionSnapshot[],
+  all: boolean,
+): { kept: SessionSnapshot[]; removed: SessionSnapshot[] } {
+  if (all) return { kept: [], removed: sessions.slice() };
+  const kept: SessionSnapshot[] = [];
+  const removed: SessionSnapshot[] = [];
+  for (const s of sessions) (isOpencodeSessionId(s.session_id) ? kept : removed).push(s);
+  return { kept, removed };
+}
+
+async function writeStateFileAtomic(file: string, state: BreadcrumbState): Promise<void> {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp.${process.pid}.${Date.now()}`);
+  const fh = await fs.open(tmp, "w", 0o600);
+  try {
+    await fh.writeFile(JSON.stringify(state, null, 2) + "\n", "utf8");
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  await fs.rename(tmp, file);
+}
+
+export async function runClean(argv: string[], deps: CrumbDeps = {}): Promise<number> {
+  const out = deps.out ?? ((s: string) => process.stdout.write(s + "\n"));
+  const err = deps.err ?? ((s: string) => process.stderr.write(s + "\n"));
+  const home = deps.home ?? homedir();
+  let opts: CleanOptions;
+  try {
+    opts = parseCleanArgs(argv);
+  } catch (e) {
+    err((e as Error).message);
+    return 2;
+  }
+  if (opts.help) {
+    out(HELP_TEXT);
+    return 0;
+  }
+  const { state: file } = localStatePaths(home);
+  let text: string;
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      out("crumb: no state file on this machine — nothing to clean.");
+      return 0;
+    }
+    err(`crumb: cannot read ${file}: ${(e as Error).message}`);
+    return 1;
+  }
+  let parsed: BreadcrumbState;
+  try {
+    parsed = parseState(text, { skipBadEntries: true });
+  } catch (e) {
+    err(`crumb: cannot parse ${file}: ${(e as Error).message}`);
+    return 1;
+  }
+  const { kept, removed } = planClean(parsed.sessions, opts.all);
+  const plural = (n: number) => (n === 1 ? "y" : "ies");
+  if (removed.length === 0) {
+    out(`crumb: nothing to clean (${kept.length} session${kept.length === 1 ? "" : "s"}).`);
+    return 0;
+  }
+  if (opts.dryRun) {
+    out(`crumb: would remove ${removed.length} entr${plural(removed.length)}, keep ${kept.length}:`);
+    for (const s of removed) out(`  - ${s.session_id}  ${s.directory}  ${s.title ?? "(untitled)"}`);
+    return 0;
+  }
+  await writeStateFileAtomic(file, { ...parsed, sessions: kept });
+  out(`crumb: removed ${removed.length} entr${plural(removed.length)}, kept ${kept.length}.`);
+  if (!opts.all) out("crumb: if removed entries reappear, restart opencode so the current plugin is loaded.");
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Command dispatch
 
-export const SUBCOMMANDS = new Set(["resume", "health", "install", "search"]);
+export const SUBCOMMANDS = new Set(["resume", "health", "install", "search", "clean"]);
 
 /** Peel off a leading subcommand; default to `resume` when none is given. */
 export function splitCommand(argv: string[]): { cmd: string; rest: string[] } {
@@ -944,6 +1066,7 @@ export function parseSearchArgs(rest: string[]): { terms: string[]; flags: strin
 export async function main(argv: string[], deps: CrumbDeps = {}): Promise<number> {
   const { cmd, rest } = splitCommand(argv);
   if (cmd === "install") return runInstall(rest, deps);
+  if (cmd === "clean") return runClean(rest, deps);
   // `crumb health` is sugar for the resume path's --health (kept as an alias).
   if (cmd === "health") return runCrumb(["--health", ...rest], deps);
   if (cmd === "search") {
