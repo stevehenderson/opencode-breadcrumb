@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  LOCAL_HOST,
   PLUGIN_SOURCES,
   buildLaunchCommand,
   buildPickerLines,
@@ -16,25 +17,50 @@ import {
   collectSessions,
   defaultPluginDir,
   formatHealth,
+  formatSessionLine,
   gitDiffs,
   installPlugin,
+  isLocalHost,
   main,
   parseArgs,
   parseHosts,
   parseInstallArgs,
   parsePrecheck,
   parseReadOutput,
+  parseSearchArgs,
   pickWithFzf,
   readAllHosts,
   readHostArgs,
+  readLocalState,
+  resolveTargets,
   resumeArgs,
+  sessionMatches,
   shQuote,
   splitCommand,
   tmuxSessionName,
+  type CrumbOptions,
   type HostRead,
   type SshResult,
 } from "../probe/crumb.ts";
-import { type BreadcrumbState } from "../shared/state.ts";
+import { type BreadcrumbState, type MergedSession } from "../shared/state.ts";
+
+function merged(overrides: Partial<MergedSession> = {}): MergedSession {
+  return {
+    session_id: "ses_1",
+    title: "refactor auth",
+    directory: "/home/dev/app",
+    git_branch: "main",
+    git_commit: "a1b2c3d4",
+    git_dirty: false,
+    last_prompt: "fix the ingress 502",
+    updated_at: "2026-09-05T12:00:00Z",
+    host: "build-01",
+    machine_id: "m1",
+    hostname: "build-01",
+    plugin_version: "0.1.0",
+    ...overrides,
+  };
+}
 
 function stateFor(overrides: Partial<BreadcrumbState> = {}, sessionOverrides: Record<string, unknown> = {}): BreadcrumbState {
   return {
@@ -385,6 +411,208 @@ test("parseArgs rejects unknown flags and bad numbers", () => {
 
 test("buildReadCommand is deterministic", () => {
   assert.equal(buildReadCommand(), buildReadCommand());
+});
+
+// -- keyword search ------------------------------------------------------------------
+
+test("sessionMatches ANDs terms across machine/title/branch/dir/gist (case-insensitive)", () => {
+  const s = merged();
+  assert.ok(sessionMatches(s, []), "no terms matches everything");
+  assert.ok(sessionMatches(s, ["ingress"]), "matches the gist");
+  assert.ok(sessionMatches(s, ["auth"]), "matches the title");
+  assert.ok(sessionMatches(s, ["build-01"]), "matches the machine");
+  assert.ok(sessionMatches(s, ["/home/dev"]), "matches the directory");
+  assert.ok(sessionMatches(s, ["INGRESS", "Auth"]), "case-insensitive AND");
+  assert.ok(!sessionMatches(s, ["ingress", "kubernetes"]), "one missing term fails the AND");
+  assert.ok(!sessionMatches(merged({ last_prompt: null }), ["ingress"]), "no gist, no match");
+});
+
+test("formatSessionLine appends the prompt gist only when present", () => {
+  const nowMs = Date.parse("2026-09-05T12:00:00Z");
+  assert.match(formatSessionLine(merged({ last_prompt: "fix ingress 502" }), nowMs), /» fix ingress 502/);
+  assert.ok(!formatSessionLine(merged({ last_prompt: null }), nowMs).includes("»"));
+});
+
+test("parseArgs collects repeatable --match", () => {
+  assert.deepEqual(parseArgs(["--match", "foo", "--match", "bar"]).match, ["foo", "bar"]);
+  assert.deepEqual(parseArgs([]).match, []);
+});
+
+test("parseSearchArgs splits leading terms from trailing flags", () => {
+  assert.deepEqual(parseSearchArgs(["ingress", "502", "--plain"]), { terms: ["ingress", "502"], flags: ["--plain"] });
+  assert.deepEqual(parseSearchArgs(["auth"]), { terms: ["auth"], flags: [] });
+  assert.deepEqual(parseSearchArgs(["--plain"]), { terms: [], flags: ["--plain"] });
+  assert.deepEqual(parseSearchArgs([]), { terms: [], flags: [] });
+});
+
+const SEARCH_STATE = JSON.stringify({
+  schema: 1,
+  machine_id: "m",
+  hostname: "alpha",
+  written_at: "2026-09-05T12:00:00Z",
+  plugin_version: "0.1.0",
+  sessions: [
+    { session_id: "ses_hit", title: "work", directory: "/a", git_branch: "main", git_commit: null, git_dirty: false, last_prompt: "fix the ingress 502", updated_at: "2026-09-05T12:00:00Z" },
+    { session_id: "ses_miss", title: "other", directory: "/b", git_branch: "main", git_commit: null, git_dirty: false, last_prompt: "update the readme", updated_at: "2026-09-05T11:00:00Z" },
+  ],
+});
+const SEARCH_READ = `__BC_READ__\n${SEARCH_STATE}\n__BC_SEP__\n${Math.floor(Date.parse("2026-09-05T12:00:00Z") / 1000)}\n`;
+const searchNow = () => Date.parse("2026-09-05T12:00:00Z");
+
+async function hostsFileWith(prefix: string): Promise<string> {
+  const f = path.join(await fs.mkdtemp(path.join(os.tmpdir(), prefix)), "hosts");
+  await fs.writeFile(f, "alpha\n");
+  return f;
+}
+
+test("main search shows only matching sessions in the picker, then resumes", async () => {
+  const hostsFile = await hostsFileWith("bc-search-");
+  const picked: string[][] = [];
+  let resumed: string[] | null = null;
+  const code = await main(["search", "ingress", "--hosts", hostsFile, "--no-tmux"], {
+    ssh: async (args) =>
+      args.some((a) => a.includes("__BC_READ__"))
+        ? { code: 0, stdout: SEARCH_READ, stderr: "" }
+        : { code: 0, stdout: "DIR_OK\nBRANCH=main\nCOMMIT=\n", stderr: "" },
+    pick: async (lines) => {
+      picked.push(lines);
+      return 1;
+    },
+    resume: async (args) => {
+      resumed = args;
+      return 0;
+    },
+    out: () => {},
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(code, 0);
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].length, 1, "only the matching session is offered");
+  assert.match(picked[0][0], /ingress/);
+  assert.ok(resumed, "resume was invoked for the match");
+  assert.ok((resumed as unknown as string[]).some((a) => a.includes("ses_hit")), "resumed the matching session");
+});
+
+test("main search with no matches exits 1 with a clear message", async () => {
+  const hostsFile = await hostsFileWith("bc-search-none-");
+  const out: string[] = [];
+  const code = await main(["search", "kubernetes", "--hosts", hostsFile], {
+    ssh: async () => ({ code: 0, stdout: SEARCH_READ, stderr: "" }),
+    out: (s) => out.push(s),
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(code, 1);
+  assert.match(out.join("\n"), /no sessions match: kubernetes/);
+});
+
+test("main search with no terms is a configuration error (exit 2)", async () => {
+  const err: string[] = [];
+  const code = await main(["search", "--plain"], { err: (s) => err.push(s) });
+  assert.equal(code, 2);
+  assert.match(err.join("\n"), /search needs at least one term/);
+});
+
+// -- local target (no host file / --local) -------------------------------------------
+
+test("isLocalHost recognizes the local aliases, case-insensitively", () => {
+  for (const h of ["local", "LOCAL", "localhost", "(local)"]) assert.ok(isLocalHost(h), h);
+  for (const h of ["build-01", "user@host", "localish"]) assert.ok(!isLocalHost(h), h);
+});
+
+test("readLocalState formats state + db mtime like the SSH read; missing files degrade", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "bc-local-"));
+  // Missing files: still a code-0 read, no state, no mtime.
+  const empty = await readLocalState(home);
+  assert.equal(empty.code, 0);
+  assert.deepEqual(parseReadOutput(empty.stdout), { stateText: null, dbMtime: null });
+
+  await fs.mkdir(path.join(home, ".local/share/breadcrumb"), { recursive: true });
+  await fs.mkdir(path.join(home, ".local/share/opencode"), { recursive: true });
+  await fs.writeFile(path.join(home, ".local/share/breadcrumb/state.json"), SEARCH_STATE);
+  await fs.writeFile(path.join(home, ".local/share/opencode/opencode.db"), "x");
+  const got = parseReadOutput((await readLocalState(home)).stdout);
+  assert.ok(got.stateText?.includes("ses_hit"));
+  assert.ok(typeof got.dbMtime === "number" && Number.isFinite(got.dbMtime));
+});
+
+test("resolveTargets: --local, missing default, empty file -> local; explicit missing -> error; hosts -> list", async () => {
+  const base = parseArgs([]);
+  const errs: string[] = [];
+  const err = (s: string) => errs.push(s);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bc-targets-"));
+
+  assert.deepEqual(await resolveTargets({ ...base, local: true }, dir, err), [LOCAL_HOST]);
+
+  // Default file missing (not explicit) -> local, with a note.
+  const missing = { ...base, hostsFile: path.join(dir, "nope"), hostsFileExplicit: false };
+  assert.deepEqual(await resolveTargets(missing, dir, err), [LOCAL_HOST]);
+  assert.ok(errs.join("\n").includes("reading this machine only"));
+
+  // Explicit --hosts that cannot be read -> error (null).
+  const explicit = { ...base, hostsFile: path.join(dir, "nope"), hostsFileExplicit: true } satisfies CrumbOptions;
+  assert.equal(await resolveTargets(explicit, dir, err), null);
+
+  // Empty file -> local.
+  const emptyFile = path.join(dir, "empty");
+  await fs.writeFile(emptyFile, "\n# just a comment\n");
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: emptyFile }, dir, err), [LOCAL_HOST]);
+
+  // Populated file -> its hosts.
+  const listFile = path.join(dir, "hosts");
+  await fs.writeFile(listFile, "alpha\nbeta\n");
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: listFile }, dir, err), ["alpha", "beta"]);
+});
+
+test("main resumes a local session without ever touching SSH", async () => {
+  let sshCalled = false;
+  let resumedCmd: string | null = null;
+  const code = await main(["--local", "--no-tmux"], {
+    home: os.tmpdir(),
+    readLocal: async () => ({ code: 0, stdout: SEARCH_READ, stderr: "" }),
+    ssh: async () => {
+      sshCalled = true;
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    localExec: async () => ({ code: 0, stdout: "DIR_OK\nBRANCH=main\nCOMMIT=\n", stderr: "" }),
+    localResume: async (cmd) => {
+      resumedCmd = cmd;
+      return 0;
+    },
+    pick: async () => 1,
+    out: () => {},
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(code, 0);
+  assert.equal(sshCalled, false, "local resume must not use ssh");
+  assert.ok(resumedCmd && (resumedCmd as string).includes("opencode -s 'ses_hit'"), resumedCmd ?? "no resume");
+});
+
+test("a `local` entry mixes this machine (direct) with SSH hosts", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bc-mix-"));
+  const hostsFile = path.join(dir, "hosts");
+  await fs.writeFile(hostsFile, "local\nalpha\n");
+  let localReads = 0;
+  const sshHosts: string[] = [];
+  const code = await main(["health", "--hosts", hostsFile], {
+    home: dir,
+    readLocal: async () => {
+      localReads++;
+      return { code: 0, stdout: SEARCH_READ, stderr: "" };
+    },
+    ssh: async (args) => {
+      sshHosts.push(args[args.length - 2]); // host is second-to-last arg
+      return { code: 0, stdout: SEARCH_READ, stderr: "" };
+    },
+    out: () => {},
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(localReads, 1, "local read once");
+  assert.deepEqual(sshHosts, ["alpha"], "alpha read over ssh, local was not");
+  assert.equal(code, 0);
 });
 
 // -- command dispatch ----------------------------------------------------------------

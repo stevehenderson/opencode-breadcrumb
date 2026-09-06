@@ -31,19 +31,26 @@ captured *at the moment you last worked*. No daemon, no listener, no background
 work. opencode exits, the plugin exits. Nothing new ever listens on a work
 machine.
 
-**2. A probe, on your laptop: `crumb`.** One run fans out a time-bounded read
-over SSH to every machine, merges the answers into a single picker sorted
-newest-first, and resumes your pick on its original machine over an
-interactive `ssh -t` — inside a named tmux session, so a dropped connection
-*detaches* instead of kills.
+**2. A probe, on your laptop: `crumb`.** One run reads every machine — the one
+it runs on directly, the rest over SSH — merges the answers into a single
+picker sorted newest-first, and resumes your pick on its original machine.
+Remote resumes go over an interactive `ssh -t` inside a named tmux session, so
+a dropped connection *detaches* instead of kills; a local resume is just a
+child process. With no host list, crumb still works — against this machine.
 
 ![Breadcrumb architecture](docs/readme-architecture.svg)
 
+Each machine keeps two files: `state.json` (the plugin's snapshot) and
+opencode's own `opencode.db`. crumb reads `state.json` for the sessions and
+stats `opencode.db` to tell whether the plugin is still live.
+
 Three constraints shaped the design:
 
-- **SSH is the only channel.** No new listener, no new service, no new attack
-  surface on work machines. Every access is initiated from the laptop with your
-  own credentials. Freshness is pull-model: as fresh as your last `crumb` run.
+- **SSH is the only channel to other machines.** No new listener, no new
+  service, no new attack surface on work machines. Every remote access is
+  initiated from the laptop with your own credentials (the local machine is
+  read straight off disk). Freshness is pull-model: as fresh as your last
+  `crumb` run.
 - **State is a snapshot, not a log.** One small file, rewritten whole and
   atomically (temp + fsync + rename), capped at 200 sessions. No spool, no
   queue, no offsets. If a machine is down, `crumb` says so and moves on.
@@ -118,18 +125,25 @@ or `node probe/crumb.ts <args>` (Node ≥ 23.6 or Bun; no build step).
 2. Start opencode once in any project. The plugin creates
    `~/.local/share/breadcrumb/` (mode 0700), the machine id (UUID, stable
    across hostname changes and reinstalls), and the first `state.json`.
-   Every session start, idle, and end rewrites the file atomically
-   (temp + fsync + rename), newest-first, capped at 200 entries.
+   Every session start, idle, prompt, and end rewrites the file atomically
+   (temp + fsync + rename), newest-first, capped at 200 entries. Each message
+   you send updates that session's gist (its `last_prompt`).
 
 ### Your laptop (once)
 
-1. Create the host list, one SSH target per line (`#` comments ok; any
-   destination `ssh` accepts, including `~/.ssh/config` aliases):
+crumb needs no host list to see the machine it runs on — `crumb`, `crumb
+search`, and `crumb health` work immediately against this machine (read
+directly, no SSH). The host list is only for reaching *other* machines.
+
+1. To add other machines, create the host list, one SSH target per line (`#`
+   comments ok; any destination `ssh` accepts, including `~/.ssh/config`
+   aliases). Add a `local` entry to keep this machine in the mix too:
 
    ```sh
    mkdir -p ~/.config/breadcrumb
    cat > ~/.config/breadcrumb/hosts <<'EOF'
    # my machines
+   local            # this machine, read directly (no SSH)
    build-01
    office-mac
    devbox
@@ -164,24 +178,36 @@ beyond the destination (jump hosts, non-default ports, specific keys) in
 ## Usage
 
 ```sh
-crumb                           # read all hosts, pick a session, resume it
+crumb                           # read all hosts (or just this one), pick, resume
+crumb search ingress 502        # same, but only sessions matching every term
+crumb --local                   # this machine only, no SSH
 crumb health                    # per-machine health, then exit
 crumb install                   # enroll the plugin on this machine
 ```
 
+- **No host list needed for the local machine.** With no `~/.config/breadcrumb/hosts`
+  (or with `--local`, or a `local` entry in the list), crumb reads this
+  machine's `state.json` straight off disk and resumes with a plain child
+  process — no SSH involved. Add hosts to fan out to other machines.
 - Reads every host concurrently (per-host `ConnectTimeout=3s`, overall
   deadline 10s); unreachable hosts never block the run.
 - Merges all sessions, most-recent first, and shows a picker
   (`fzf` when present, numbered list otherwise):
 
   ```
-   1) build-01  3m  fix-ingress-502*  /home/dev/src/platform  fix ingress 502 on staging
-   2) office-mac  2h  main  /Users/me/dev/app  refactor auth
+   1) build-01  3m  fix-ingress-502*  /home/dev/src/platform  untitled  » fix the ingress 502 on staging
+   2) office-mac  2h  main  /Users/me/dev/app  refactor auth  » extract the token refresh into its own module
    3) build-01  1d  no-branch  /home/dev/scratch  untitled
   select [1-3] (empty cancels):
   ```
 
-  `*` marks a dirty working tree at last observation.
+  `*` marks a dirty working tree at last observation. `»` is the session's
+  gist — the last prompt you sent — which the plugin records automatically.
+- **Search** (`crumb search <terms>` or `--match <term>`, repeatable) keeps
+  only sessions where every term appears — case-insensitively — in the machine,
+  title, branch, directory, or the gist. With `fzf` you can also just type to
+  filter the full list interactively; `search` narrows before the picker even
+  opens (and works with `--plain`/scripts).
 - Before resuming, `crumb` re-checks the directory and git state over SSH.
   If branch or commit differ from the snapshot, it shows the difference and
   asks for confirmation — it never checks out, stashes, or cleans anything.
@@ -198,10 +224,12 @@ Resume options (also accepted after `crumb health`, where relevant):
 | Flag | Default | Meaning |
 |---|---|---|
 | `--hosts <file>` | `~/.config/breadcrumb/hosts` | alternate host list |
+| `--local` | — | read only this machine, directly (no SSH) |
 | `--plain` | — | force the numbered list even if `fzf` is installed |
 | `--no-tmux` | — | resume without the tmux wrapper |
 | `--deadline <ms>` | `10000` | overall read deadline |
 | `--connect <ms>` | `3000` | per-host SSH `ConnectTimeout` |
+| `--match <term>` | — | keep only sessions matching `<term>`; repeatable, all must match (`crumb search <terms>` is shorthand) |
 
 `crumb install` takes `--dest <dir>` (default `~/.config/opencode/plugins`).
 `crumb health` prints reachability, last write, live/STALE, and plugin version,
@@ -237,11 +265,18 @@ plugin is presumed dead and the machine is flagged `STALE` in `crumb health`.
       "git_branch": "fix-ingress-502",
       "git_commit": "a1b2c3d4",
       "git_dirty": true,
+      "last_prompt": "fix the ingress 502 on staging",
       "updated_at": "2026-09-05T14:22:31Z"
     }
   ]
 }
 ```
+
+`last_prompt` is the session's gist — the most recent user prompt, whitespace
+collapsed and clipped to 200 characters. The plugin captures it from opencode's
+`chat.message` hook each time you send a message; it holds no other transcript
+content. It is optional: state files written before the field, and sessions the
+plugin never saw a prompt for, simply omit it (read as absent).
 
 Both sides share one typed schema in `shared/state.ts`; the probe rejects
 unknown `schema` values and warns instead of misparsing. A plugin that cannot
@@ -252,7 +287,8 @@ read an existing file (e.g. a newer schema) refuses to clobber it.
 - No listener or new service is ever started on work machines; SSH is the
   only channel, initiated from the laptop with your own credentials.
 - State file and its directory are owner-only (0700/0600). The file holds
-  titles, paths, and git refs — no transcripts.
+  titles, paths, git refs, and a one-line gist (your last prompt, clipped to
+  200 chars) — no full transcripts.
 - All state-derived values are shell-quoted when composing remote commands
   (a tampered state file cannot inject commands at resume time).
 - Residual risk: an attacker who already owns a machine's user account could
