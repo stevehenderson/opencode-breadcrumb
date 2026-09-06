@@ -145,6 +145,22 @@ or `node probe/crumb.ts <args>` (Node ≥ 23.6 or Bun; no build step).
 3. Optional but nice: `brew install fzf tmux` on the laptop; `tmux` on the
    work machines so a dropped connection detaches instead of kills a session.
 
+### SSH configuration
+
+Breadcrumb stores identity, not connectivity. Each line in the host list is an
+opaque SSH *target* — a bare hostname, `user@host`, or a `~/.ssh/config` alias
+— and crumb never parses a user, port, key, or proxy out of it. All connection
+behaviour is delegated to your system `ssh` client and `~/.ssh/config`:
+`HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, multiplexing,
+`known_hosts`, and so on.
+
+The only options crumb adds to `ssh` are `BatchMode=yes` (never prompt),
+a per-host `ConnectTimeout` (`--connect`), and `-t` for the interactive resume.
+It invokes `ssh` directly with an argument vector — no shell in between — so a
+target is passed through verbatim and is never re-interpreted. Put anything
+beyond the destination (jump hosts, non-default ports, specific keys) in
+`~/.ssh/config`; a host line is a single token and cannot carry inline flags.
+
 ## Usage
 
 ```sh
