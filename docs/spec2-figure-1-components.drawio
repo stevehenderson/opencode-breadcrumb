@@ -1,0 +1,67 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="page1" name="Components">
+    <mxGraphModel dx="1000" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="560" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="grp-machine" value="Work machine (xN)" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="40" width="460" height="460" as="geometry" />
+        </mxCell>
+        <mxCell id="grp-laptop" value="Laptop" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="120" width="380" height="300" as="geometry" />
+        </mxCell>
+
+        <mxCell id="comp-opencode" value="opencode&#10;(server + TUI)" style="html=1;dropTarget=0;whiteSpace=wrap;shape=component;align=center;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="comp-plugin" value="breadcrumb plugin" style="html=1;dropTarget=0;whiteSpace=wrap;shape=component;align=center;" vertex="1" parent="1">
+          <mxGeometry x="100" y="230" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="db-opencode" value="opencode.db" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+          <mxGeometry x="350" y="100" width="140" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="doc-state" value="state.json" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="250" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="comp-probe" value="probe (crumb)" style="html=1;dropTarget=0;whiteSpace=wrap;shape=component;align=center;" vertex="1" parent="1">
+          <mxGeometry x="700" y="170" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="db-cache" value="cache (M2)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="720" y="300" width="140" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="in-process events" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;dashed=1;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="comp-plugin" target="comp-opencode">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="sessions" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="comp-opencode" target="db-opencode">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="writes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="comp-plugin" target="doc-state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="SSH: cat" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=0;exitY=0.35;entryX=1;entryY=0.5;" edge="1" parent="1" source="comp-probe" target="doc-state">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="194" />
+              <mxPoint x="600" y="280" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" value="SSH -t: resume" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=0;exitY=0.65;entryX=0.5;entryY=0;" edge="1" parent="1" source="comp-probe" target="comp-opencode">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="545" y="216" />
+              <mxPoint x="545" y="80" />
+              <mxPoint x="190" y="80" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" value="bun:sqlite" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="comp-probe" target="db-cache">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
