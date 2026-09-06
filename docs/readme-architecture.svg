@@ -1,40 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="780" height="320" viewBox="0 0 780 320" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Breadcrumb architecture: the crumb probe on your laptop reads each work machine's state.json over ssh and resumes a session over ssh -t; the breadcrumb plugin inside opencode writes state.json.">
-  <rect width="780" height="320" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="470" viewBox="0 0 900 470" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="crumb reads each machine's state.json plus the opencode.db mtime and resumes a session. For remote work machines it uses ssh and ssh -t; for the machine it runs on it reads and resumes directly, no SSH. On every machine the breadcrumb plugin writes state.json and opencode writes opencode.db.">
+  <rect width="900" height="470" fill="#ffffff"/>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-start">
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-start">
       <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+    <marker id="al" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-start">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
     </marker>
   </defs>
 
-  <!-- deployment groups -->
-  <rect x="40" y="70" width="220" height="200" rx="6" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
-  <text x="54" y="92" font-size="14" font-weight="700" fill="#6b7280">Laptop</text>
+  <!-- ============ Laptop ============ -->
+  <rect x="20" y="185" width="170" height="110" rx="6" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="34" y="206" font-size="13" font-weight="700" fill="#6b7280">Laptop</text>
+  <rect x="38" y="216" width="134" height="54" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+  <text x="105" y="248" font-size="14" font-weight="600" fill="#1e293b" text-anchor="middle">crumb (probe)</text>
 
-  <rect x="440" y="50" width="300" height="250" rx="6" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
-  <text x="454" y="72" font-size="14" font-weight="700" fill="#6b7280">Work machine (×N)</text>
+  <!-- ============ This machine — local (no SSH) ============ -->
+  <rect x="250" y="20" width="630" height="195" rx="6" fill="none" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="264" y="42" font-size="13" font-weight="700" fill="#0d9488">This machine — local (no SSH)</text>
 
-  <!-- edges (drawn before boxes so heads sit on the borders) -->
-  <!-- resume -->
-  <polyline points="230,150 360,150 360,125 470,125" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <text x="300" y="142" font-size="12" fill="#374151" text-anchor="middle">ssh -t: resume</text>
-  <!-- read -->
-  <polyline points="230,196 360,196 360,235 480,235" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <text x="300" y="212" font-size="12" fill="#374151" text-anchor="middle">ssh: cat state.json</text>
-  <!-- plugin writes state -->
-  <polyline points="590,160 590,200" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <text x="600" y="184" font-size="12" fill="#374151">writes (atomic)</text>
+  <rect x="420" y="56" width="180" height="54" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
+  <text x="510" y="80" font-size="14" font-weight="600" fill="#7c2d12" text-anchor="middle">state.json</text>
+  <text x="510" y="98" font-size="10" fill="#9a3412" text-anchor="middle">~/.local/share/breadcrumb/</text>
+  <path d="M420,139 L420,181 A90,7 0 0 0 600,181 L600,139 A90,7 0 0 1 420,139 Z" fill="#eef2f6" stroke="#475569" stroke-width="1.5"/>
+  <ellipse cx="510" cy="139" rx="90" ry="7" fill="#eef2f6" stroke="#475569" stroke-width="1.5"/>
+  <text x="510" y="162" font-size="13" font-weight="600" fill="#334155" text-anchor="middle">opencode.db</text>
+  <text x="510" y="177" font-size="10" fill="#64748b" text-anchor="middle">SQLite — mtime = liveness</text>
+  <rect x="680" y="76" width="180" height="66" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
+  <text x="770" y="104" font-size="14" font-weight="600" fill="#065f46" text-anchor="middle">opencode</text>
+  <text x="770" y="124" font-size="12" fill="#047857" text-anchor="middle">+ breadcrumb plugin</text>
+  <polyline points="680,92 636,92 636,72 602,72" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="632" y="68" font-size="10" fill="#374151" text-anchor="end">writes</text>
+  <polyline points="680,126 636,126 636,150 602,150" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="632" y="140" font-size="10" fill="#374151" text-anchor="end">sessions</text>
 
-  <!-- crumb probe -->
-  <rect x="70" y="140" width="160" height="66" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
-  <text x="150" y="178" font-size="14" font-weight="600" fill="#1e293b" text-anchor="middle">crumb (probe)</text>
+  <!-- ============ Work machine (xN) — over SSH ============ -->
+  <rect x="250" y="255" width="630" height="195" rx="6" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="264" y="277" font-size="13" font-weight="700" fill="#6b7280">Work machine (×N) — over SSH</text>
 
-  <!-- opencode + plugin -->
-  <rect x="470" y="90" width="240" height="70" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
-  <text x="590" y="119" font-size="14" font-weight="600" fill="#065f46" text-anchor="middle">opencode</text>
-  <text x="590" y="140" font-size="13" fill="#047857" text-anchor="middle">+ breadcrumb plugin</text>
+  <rect x="420" y="291" width="180" height="54" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
+  <text x="510" y="315" font-size="14" font-weight="600" fill="#7c2d12" text-anchor="middle">state.json</text>
+  <text x="510" y="333" font-size="10" fill="#9a3412" text-anchor="middle">~/.local/share/breadcrumb/</text>
+  <path d="M420,374 L420,416 A90,7 0 0 0 600,416 L600,374 A90,7 0 0 1 420,374 Z" fill="#eef2f6" stroke="#475569" stroke-width="1.5"/>
+  <ellipse cx="510" cy="374" rx="90" ry="7" fill="#eef2f6" stroke="#475569" stroke-width="1.5"/>
+  <text x="510" y="397" font-size="13" font-weight="600" fill="#334155" text-anchor="middle">opencode.db</text>
+  <text x="510" y="412" font-size="10" fill="#64748b" text-anchor="middle">SQLite — mtime = liveness</text>
+  <rect x="680" y="311" width="180" height="66" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
+  <text x="770" y="339" font-size="14" font-weight="600" fill="#065f46" text-anchor="middle">opencode</text>
+  <text x="770" y="359" font-size="12" fill="#047857" text-anchor="middle">+ breadcrumb plugin</text>
+  <polyline points="680,327 636,327 636,307 602,307" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="632" y="303" font-size="10" fill="#374151" text-anchor="end">writes</text>
+  <polyline points="680,361 636,361 636,385 602,385" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="632" y="375" font-size="10" fill="#374151" text-anchor="end">sessions</text>
 
-  <!-- state.json -->
-  <rect x="480" y="200" width="220" height="70" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
-  <text x="590" y="230" font-size="14" font-weight="600" fill="#7c2d12" text-anchor="middle">state.json</text>
-  <text x="590" y="252" font-size="11" fill="#9a3412" text-anchor="middle">~/.local/share/breadcrumb/</text>
+  <!-- ============ crumb -> local (teal, no SSH) ============ -->
+  <polyline points="172,230 300,230 300,83 418,83" fill="none" stroke="#0d9488" stroke-width="1.7" marker-end="url(#al)"/>
+  <text x="414" y="76" font-size="11" fill="#0f766e" text-anchor="end">read: state.json + db mtime</text>
+  <polyline points="172,252 344,252 344,116 678,116" fill="none" stroke="#0d9488" stroke-width="1.7" marker-end="url(#al)"/>
+  <text x="672" y="110" font-size="11" fill="#0f766e" text-anchor="end">resume (no SSH)</text>
+
+  <!-- ============ crumb -> remote (gray, SSH) ============ -->
+  <polyline points="172,236 300,236 300,318 418,318" fill="none" stroke="#6b7280" stroke-width="1.7" marker-end="url(#a)"/>
+  <text x="414" y="311" font-size="11" fill="#374151" text-anchor="end">ssh: read state.json + db mtime</text>
+  <polyline points="172,258 344,258 344,351 678,351" fill="none" stroke="#6b7280" stroke-width="1.7" marker-end="url(#a)"/>
+  <text x="672" y="345" font-size="11" fill="#374151" text-anchor="end">ssh -t: resume</text>
 </svg>
