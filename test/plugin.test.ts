@@ -87,11 +87,19 @@ test("extractSessionRef maps session.deleted to remove", () => {
 });
 
 test("extractSessionRef maps message events with throttle (FR-PLUGIN-042)", () => {
-  const ref = extractSessionRef({ type: "message.updated", properties: { info: { sessionID: "ses_m" } } }, "/ctx");
+  // A real message.updated payload is `info: Message`, which carries BOTH an
+  // `id` (the message id) and `sessionID`. We must key off sessionID, never id.
+  const ref = extractSessionRef(
+    { type: "message.updated", properties: { info: { id: "msg_abc", sessionID: "ses_m" } } },
+    "/ctx",
+  );
   assert.deepEqual(ref, { kind: "observe", sessionID: "ses_m", throttled: true });
-  const part = extractSessionRef({ type: "message.part.updated", properties: { part: { sessionID: "ses_p" } } }, "/ctx");
-  assert.equal(part?.kind, "observe");
-  if (part?.kind === "observe") assert.equal(part.throttled, true);
+  // Likewise a Part carries its own `id`; the session id comes from sessionID.
+  const part = extractSessionRef(
+    { type: "message.part.updated", properties: { part: { id: "prt_xyz", sessionID: "ses_p" } } },
+    "/ctx",
+  );
+  assert.deepEqual(part, { kind: "observe", sessionID: "ses_p", throttled: true });
 });
 
 test("extractSessionRef ignores unknown events and missing ids", () => {
