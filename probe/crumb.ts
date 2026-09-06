@@ -477,23 +477,28 @@ export function parseArgs(argv: string[]): CrumbOptions {
   return opts;
 }
 
-export const HELP_TEXT = `crumb — resume opencode sessions across machines (BRC-SPEC-002)
+export const HELP_TEXT = `crumb — capture and resume opencode sessions across machines (BRC-SPEC-002)
 
 Usage:
-  crumb                 read all hosts, pick a session, resume it over SSH
-  crumb --health        show per-machine health (reachability, staleness)
+  crumb [resume]        read all hosts, pick a session, resume it over SSH
+  crumb health          show per-machine health (reachability, staleness)
+  crumb install         enroll the breadcrumb plugin on this machine
   crumb --help
 
-Options:
+Resume options:
   --hosts <file>        host list file (default ~/.config/breadcrumb/hosts)
   --plain               numbered list from stdin instead of fzf
   --no-tmux             do not wrap the resume in a tmux session
   --deadline <ms>       overall read deadline (default 10000)
   --connect <ms>        per-host SSH ConnectTimeout (default 3000)
 
+Install options:
+  --dest <dir>          plugin directory (default ~/.config/opencode/plugins)
+
 Host list format: one SSH target per line; # comments and blank lines ok.
 Exit codes: 0 ok/resumed; 1 cancelled, no selection, or resume failed;
-2 configuration error. crumb --health exits 1 if any host is unreachable.`;
+2 configuration error. crumb health exits 1 if any host is unreachable.
+(--health is accepted as an alias for the health command.)`;
 
 export interface CrumbDeps {
   ssh?: SshRunner;
@@ -659,6 +664,125 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
 }
 
 // ---------------------------------------------------------------------------
+// Install / enrollment
+//
+// Copies the plugin and the shared state module into opencode's plugin
+// directory. Two files, because opencode's plugin glob is non-recursive; the
+// plugin resolves the shared module from a sibling subdirectory at runtime.
+// Shared by `crumb install` and scripts/install.mjs so enrollment has one
+// implementation. No build step: opencode runs the TypeScript directly.
+
+export const PLUGIN_SOURCES: ReadonlyArray<readonly [string, string]> = [
+  ["plugin/breadcrumb.ts", "breadcrumb.ts"],
+  ["shared/state.ts", "shared/state.ts"],
+];
+
+export function defaultPluginDir(home: string = homedir()): string {
+  return path.join(home, ".config", "opencode", "plugins");
+}
+
+/** Package root that holds plugin/ and shared/ (crumb.ts lives in probe/). */
+export function moduleRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+export interface InstallResult {
+  dest: string;
+  installed: string[];
+}
+
+export async function installPlugin(
+  opts: { root?: string; dest?: string; home?: string; log?: (s: string) => void } = {},
+): Promise<InstallResult> {
+  const root = opts.root ?? moduleRoot();
+  const dest = opts.dest ?? defaultPluginDir(opts.home);
+  const log = opts.log ?? (() => {});
+  const installed: string[] = [];
+  for (const [from, to] of PLUGIN_SOURCES) {
+    const src = path.join(root, from);
+    await fs.stat(src);
+    const target = path.join(dest, to);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.cp(src, target);
+    installed.push(to);
+    log(`installed ${to}`);
+  }
+  // Remove a stale flat copy a previous installer version may have left behind.
+  await fs.rm(path.join(dest, "state.ts"), { force: true }).catch(() => {});
+  return { dest, installed };
+}
+
+export interface InstallOptions {
+  dest?: string;
+  help: boolean;
+}
+
+export function parseInstallArgs(argv: string[]): InstallOptions {
+  const opts: InstallOptions = { help: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--dest") {
+      const v = argv[++i];
+      if (v === undefined) throw new Error(`missing value for ${a}`);
+      opts.dest = v;
+    } else if (a === "--help" || a === "-h") {
+      opts.help = true;
+    } else {
+      throw new Error(`unknown option: ${a}`);
+    }
+  }
+  return opts;
+}
+
+export async function runInstall(argv: string[], deps: CrumbDeps = {}): Promise<number> {
+  const out = deps.out ?? ((s: string) => process.stdout.write(s + "\n"));
+  const err = deps.err ?? ((s: string) => process.stderr.write(s + "\n"));
+  const home = deps.home ?? homedir();
+  let opts: InstallOptions;
+  try {
+    opts = parseInstallArgs(argv);
+  } catch (e) {
+    err((e as Error).message);
+    return 2;
+  }
+  if (opts.help) {
+    out(HELP_TEXT);
+    return 0;
+  }
+  const dest = opts.dest !== undefined ? path.resolve(expandHome(opts.dest, home)) : undefined;
+  try {
+    const res = await installPlugin({ dest, home, log: out });
+    out("");
+    out(`Done — enrolled into ${res.dest}. Start opencode once; the plugin creates`);
+    out("~/.local/share/breadcrumb/ with the machine id and first state file.");
+    return 0;
+  } catch (e) {
+    err(`crumb: install failed: ${(e as Error).message}`);
+    return 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Command dispatch
+
+export const SUBCOMMANDS = new Set(["resume", "health", "install"]);
+
+/** Peel off a leading subcommand; default to `resume` when none is given. */
+export function splitCommand(argv: string[]): { cmd: string; rest: string[] } {
+  const first = argv[0];
+  if (first !== undefined && SUBCOMMANDS.has(first)) return { cmd: first, rest: argv.slice(1) };
+  return { cmd: "resume", rest: argv };
+}
+
+export async function main(argv: string[], deps: CrumbDeps = {}): Promise<number> {
+  const { cmd, rest } = splitCommand(argv);
+  if (cmd === "install") return runInstall(rest, deps);
+  // `crumb health` is sugar for the resume path's --health (kept as an alias).
+  if (cmd === "health") return runCrumb(["--health", ...rest], deps);
+  return runCrumb(rest, deps);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point (runs only when executed directly, not when imported by tests)
 
 function isMain(): boolean {
@@ -672,7 +796,7 @@ function isMain(): boolean {
 }
 
 if (isMain()) {
-  runCrumb(process.argv.slice(2)).then((code) => {
+  main(process.argv.slice(2)).then((code) => {
     // Release the (possibly created) stdin reader so an interactive TTY does
     // not keep the process alive after resume.
     process.stdin.destroy();
