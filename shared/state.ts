@@ -10,6 +10,16 @@ export const STATE_DIR_NAME = "breadcrumb";
 export const STATE_FILE_NAME = "state.json";
 export const MACHINE_ID_FILE_NAME = "machine_id";
 
+/** Cap on the stored last-prompt gist: enough to search, small enough to stay a snapshot. */
+export const MAX_PROMPT_LEN = 200;
+
+/** Collapse whitespace and clip a prompt to a compact single-line gist. */
+export function truncatePrompt(s: string, max: number = MAX_PROMPT_LEN): string {
+  const collapsed = s.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= max) return collapsed;
+  return collapsed.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
+}
+
 export interface SessionSnapshot {
   /** opencode session id, verbatim; the argument to `opencode -s`. */
   session_id: string;
@@ -23,6 +33,13 @@ export interface SessionSnapshot {
   git_commit: string | null;
   /** Whether the working tree had uncommitted changes at last observation. */
   git_dirty: boolean;
+  /**
+   * Gist of the session: the most recent user prompt, collapsed and clipped to
+   * MAX_PROMPT_LEN. Drives keyword search and enriches the picker. Optional so
+   * that state files written before this field, or by a client that never saw a
+   * prompt, still parse; absent is read as null.
+   */
+  last_prompt?: string | null;
   /** Last observation time, RFC 3339 UTC; the probe's sort key. */
   updated_at: string;
 }
@@ -79,6 +96,7 @@ export function sanitizeSession(entry: unknown): SessionSnapshot {
     git_branch: isString(o.git_branch) ? o.git_branch : null,
     git_commit: isString(o.git_commit) ? o.git_commit : null,
     git_dirty: typeof o.git_dirty === "boolean" ? o.git_dirty : false,
+    last_prompt: isString(o.last_prompt) && o.last_prompt !== "" ? truncatePrompt(o.last_prompt) : null,
     updated_at: o.updated_at,
   };
 }
