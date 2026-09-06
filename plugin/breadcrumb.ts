@@ -97,9 +97,16 @@ export function extractSessionRef(event: EventLike, ctxDirectory: string): Sessi
       return { kind: "observe", sessionID, throttled: false };
     case "session.deleted":
       return { kind: "remove", sessionID };
-    case "message.updated":
-    case "message.part.updated":
-      return { kind: "observe", sessionID, throttled: true };
+    case "message.updated": {
+      // properties.info is a Message, whose `id` is the *message* id, not the
+      // session id (that field caught `sessionID` above). Use sessionID only.
+      const sid = asString(info?.sessionID) ?? asString(p.sessionID);
+      return sid ? { kind: "observe", sessionID: sid, throttled: true } : null;
+    }
+    case "message.part.updated": {
+      const sid = asString(part?.sessionID) ?? asString(p.sessionID);
+      return sid ? { kind: "observe", sessionID: sid, throttled: true } : null;
+    }
     default:
       return null;
   }
