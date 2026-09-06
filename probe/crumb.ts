@@ -673,7 +673,14 @@ export async function resolveTargets(
  *    question unresolved).
  */
 function makeStdinReader(): (prompt: string) => Promise<string | null> {
-  const rl = readline.createInterface({ input: process.stdin, terminal: process.stdin.isTTY === true });
+  // `output` is required for terminal mode: in a TTY readline switches stdin to
+  // raw mode, and without an output stream it has nowhere to echo keystrokes or
+  // drive line editing — typed input appears to do nothing. Harmless for pipes.
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: process.stdin.isTTY === true,
+  });
   const buffered: string[] = [];
   let pending: ((a: string | null) => void) | null = null;
   const settle = (a: string | null) => {
