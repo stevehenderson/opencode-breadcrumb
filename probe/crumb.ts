@@ -672,7 +672,19 @@ export async function resolveTargets(
  *    stdin ended never fires 'close', so the process would exit with the
  *    question unresolved).
  */
-function makeStdinReader(): (prompt: string) => Promise<string | null> {
+interface StdinReader {
+  ask: (prompt: string) => Promise<string | null>;
+  /**
+   * Tear down the interface and hand the TTY back. Must be called before we
+   * spawn an interactive child (resume): readline holds stdin in raw mode, and
+   * a live interface would fight the child for keystrokes and re-render the
+   * line — dropped keys and flicker. Interface.close() disables raw mode and
+   * pauses stdin, so the child gets exclusive control.
+   */
+  close: () => void;
+}
+
+function makeStdinReader(): StdinReader {
   // `output` is required for terminal mode: in a TTY readline switches stdin to
   // raw mode, and without an output stream it has nowhere to echo keystrokes or
   // drive line editing — typed input appears to do nothing. Harmless for pipes.
@@ -683,6 +695,7 @@ function makeStdinReader(): (prompt: string) => Promise<string | null> {
   });
   const buffered: string[] = [];
   let pending: ((a: string | null) => void) | null = null;
+  let closed = false;
   const settle = (a: string | null) => {
     if (pending === null) return;
     const resolve = pending;
@@ -694,20 +707,28 @@ function makeStdinReader(): (prompt: string) => Promise<string | null> {
     else buffered.push(line);
   });
   rl.on("close", () => settle(null));
-  return (prompt) =>
-    new Promise<string | null>((resolve) => {
-      pending = resolve;
-      if (buffered.length > 0) {
-        settle(buffered.shift()!);
-        return;
-      }
-      if (process.stdin.readableEnded) {
-        rl.close();
-        settle(null);
-        return;
-      }
-      process.stdout.write(prompt);
-    });
+  return {
+    ask: (prompt) =>
+      new Promise<string | null>((resolve) => {
+        pending = resolve;
+        if (buffered.length > 0) {
+          settle(buffered.shift()!);
+          return;
+        }
+        if (process.stdin.readableEnded) {
+          rl.close();
+          settle(null);
+          return;
+        }
+        process.stdout.write(prompt);
+      }),
+    close: () => {
+      if (closed) return;
+      closed = true;
+      settle(null); // resolve any in-flight question so nothing hangs
+      rl.close(); // restores cooked mode + pauses stdin (Interface.close)
+    },
+  };
 }
 
 export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<number> {
@@ -719,8 +740,14 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
   const home = deps.home ?? homedir();
   // Exactly one stdin reader per run: two readline interfaces on one stdin
   // split its lines between themselves.
-  let stdinReader: ((prompt: string) => Promise<string | null>) | undefined;
-  const ask = (prompt: string) => (deps.ask ?? (stdinReader ??= makeStdinReader()))(prompt);
+  let stdinReader: StdinReader | undefined;
+  const ask = (prompt: string) => (deps.ask ? deps.ask(prompt) : (stdinReader ??= makeStdinReader()).ask(prompt));
+  // Release stdin before handing the TTY to an interactive child (resume), so
+  // our readline doesn't fight the child for keystrokes.
+  const releaseStdin = () => {
+    stdinReader?.close();
+    stdinReader = undefined;
+  };
   let opts: CrumbOptions;
   try {
     opts = parseArgs(argv);
@@ -823,6 +850,8 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
 
   const useTmux = !opts.noTmux && pc.tmux;
   const remote = buildRemoteCommand(sel.directory, sel.session_id, useTmux);
+  // Hand the terminal to the resumed session with no readline in the way.
+  releaseStdin();
   const code = local
     ? await (deps.localResume ?? systemLocalResume())(remote)
     : await resume(resumeArgs(sel.host, remote));
