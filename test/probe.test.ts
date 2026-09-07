@@ -26,6 +26,7 @@ import {
   parseArgs,
   parseCleanArgs,
   parseHosts,
+  parseHostsArgs,
   parseInstallArgs,
   parsePrecheck,
   parseReadOutput,
@@ -38,6 +39,7 @@ import {
   readLocalState,
   resolveTargets,
   resumeArgs,
+  runHosts,
   sessionMatches,
   shQuote,
   splitCommand,
@@ -592,6 +594,79 @@ test("main resumes a local session without ever touching SSH", async () => {
   assert.equal(code, 0);
   assert.equal(sshCalled, false, "local resume must not use ssh");
   assert.ok(resumedCmd && (resumedCmd as string).includes("opencode -s 'ses_hit'"), resumedCmd ?? "no resume");
+});
+
+// -- hosts (manage the SSH target list) ----------------------------------------------
+
+test("parseHostsArgs: default list; actions, aliases, --hosts, and errors", () => {
+  assert.equal(parseHostsArgs([], "/home/me").action, "list");
+  assert.equal(parseHostsArgs([], "/home/me").file, path.join("/home/me", ".config", "breadcrumb", "hosts"));
+  assert.deepEqual(parseHostsArgs(["add", "a", "b"]).targets, ["a", "b"]);
+  assert.equal(parseHostsArgs(["add", "a"]).action, "add");
+  assert.equal(parseHostsArgs(["rm", "a"]).action, "remove");
+  assert.equal(parseHostsArgs(["remove", "a"]).action, "remove");
+  assert.equal(parseHostsArgs(["--hosts", "/x", "list"]).file, "/x");
+  assert.equal(parseHostsArgs(["--help"]).help, true);
+  assert.throws(() => parseHostsArgs(["bogusaction"]), /unknown hosts action/);
+  assert.throws(() => parseHostsArgs(["--nope"]), /unknown option/);
+  assert.throws(() => parseHostsArgs(["--hosts"]), /missing value/);
+});
+
+async function tmpHostsFile(prefix: string, content?: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const file = path.join(dir, "hosts");
+  if (content !== undefined) await fs.writeFile(file, content);
+  return file;
+}
+
+test("runHosts add creates the file, appends, and dedupes", async () => {
+  const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "bc-hosts-add-")), "sub", "hosts");
+  const out: string[] = [];
+  assert.equal(await runHosts(["add", "build-01", "office-mac", "--hosts", file], { out: (s) => out.push(s) }), 0);
+  assert.deepEqual(parseHosts(await fs.readFile(file, "utf8")), ["build-01", "office-mac"]);
+  out.length = 0;
+  assert.equal(await runHosts(["add", "build-01", "devbox", "--hosts", file], { out: (s) => out.push(s) }), 0);
+  assert.deepEqual(parseHosts(await fs.readFile(file, "utf8")), ["build-01", "office-mac", "devbox"]);
+  assert.match(out.join("\n"), /added devbox \(already present: build-01\)/);
+});
+
+test("runHosts remove deletes matching targets and preserves comments/blanks", async () => {
+  const file = await tmpHostsFile("bc-hosts-rm-", "# my machines\nbuild-01\n\noffice-mac\ndevbox\n");
+  const out: string[] = [];
+  assert.equal(await runHosts(["remove", "office-mac", "ghost", "--hosts", file], { out: (s) => out.push(s) }), 0);
+  const raw = await fs.readFile(file, "utf8");
+  assert.ok(raw.includes("# my machines"), "comment preserved");
+  assert.deepEqual(parseHosts(raw), ["build-01", "devbox"]);
+  assert.match(out.join("\n"), /removed office-mac \(not found: ghost\)/);
+});
+
+test("runHosts list shows targets; empty/missing explains local-only", async () => {
+  const withHosts = await tmpHostsFile("bc-hosts-list-", "alpha\nbeta\n");
+  const out: string[] = [];
+  assert.equal(await runHosts(["list", "--hosts", withHosts], { out: (s) => out.push(s) }), 0);
+  assert.deepEqual(out, ["1) alpha", "2) beta"]);
+
+  const missing = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "bc-hosts-none-")), "hosts");
+  const out2: string[] = [];
+  assert.equal(await runHosts([], { out: (s) => out2.push(s), home: path.dirname(path.dirname(path.dirname(missing))) }), 0);
+  // default file under a fresh home is absent → local-only message
+  assert.match(out2.join("\n"), /reads this machine only/);
+});
+
+test("runHosts path prints the file location; invalid targets are rejected", async () => {
+  const out: string[] = [];
+  assert.equal(await runHosts(["path", "--hosts", "/tmp/x/hosts"], { out: (s) => out.push(s) }), 0);
+  assert.deepEqual(out, ["/tmp/x/hosts"]);
+  const err: string[] = [];
+  assert.equal(await runHosts(["add", "bad host", "--hosts", "/tmp/x/hosts"], { err: (s) => err.push(s) }), 2);
+  assert.match(err.join("\n"), /invalid host target/);
+});
+
+test("main hosts routes to runHosts", async () => {
+  const file = await tmpHostsFile("bc-hosts-main-", "alpha\n");
+  const out: string[] = [];
+  assert.equal(await main(["hosts", "list", "--hosts", file], { out: (s) => out.push(s) }), 0);
+  assert.deepEqual(out, ["1) alpha"]);
 });
 
 // -- clean (prune this machine's state) ----------------------------------------------

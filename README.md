@@ -135,20 +135,20 @@ crumb needs no host list to see the machine it runs on — `crumb`, `crumb
 search`, and `crumb health` work immediately against this machine (read
 directly, no SSH). The host list is only for reaching *other* machines.
 
-1. To add other machines, create the host list, one SSH target per line (`#`
-   comments ok; any destination `ssh` accepts, including `~/.ssh/config`
-   aliases). Add a `local` entry to keep this machine in the mix too:
+1. To add other machines, manage the host list with `crumb hosts` (each target
+   is anything `ssh` accepts — a hostname, `user@host`, or a `~/.ssh/config`
+   alias; a `local` target means this machine, read directly):
 
    ```sh
-   mkdir -p ~/.config/breadcrumb
-   cat > ~/.config/breadcrumb/hosts <<'EOF'
-   # my machines
-   local            # this machine, read directly (no SSH)
-   build-01
-   office-mac
-   devbox
-   EOF
+   crumb hosts add build-01 office-mac devbox
+   crumb hosts add local          # include this machine alongside the rest
+   crumb hosts list               # 1) build-01  2) office-mac  …
+   crumb hosts remove office-mac  # (alias: rm)
+   crumb hosts path               # where the list lives
    ```
+
+   It's just a text file (`~/.config/breadcrumb/hosts`, one target per line,
+   `#` comments ok) if you'd rather edit it directly.
 
 2. Verify key-based, non-interactive access:
 
@@ -184,6 +184,7 @@ crumb --local                   # this machine only, no SSH
 crumb health                    # per-machine health, then exit
 crumb install                   # enroll the plugin on this machine
 crumb clean                     # prune stale/invalid entries on this machine
+crumb hosts add build-01        # manage the SSH target list (list/add/remove)
 ```
 
 - **No host list needed for the local machine.** With no `~/.config/breadcrumb/hosts`
@@ -242,6 +243,11 @@ entries that are not real opencode sessions — stray artifacts, e.g. from an
 older plugin version; `--all` wipes every entry (a full reset), and `--dry-run`
 shows what would go without writing. If pruned entries reappear, restart
 opencode so the current plugin is the one running.
+
+`crumb hosts` manages the SSH target list: `list` (default), `add <target…>`,
+`remove <target…>` (alias `rm`), and `path`. Adds are de-duplicated and removes
+preserve your comments and blank lines. Pass `--hosts <file>` to manage a list
+other than the default `~/.config/breadcrumb/hosts`.
 
 Exit codes: `0` resumed / all reachable; `1` cancelled, no sessions, resume
 failed, or (for `crumb health`) some host unreachable; `2` configuration error.
