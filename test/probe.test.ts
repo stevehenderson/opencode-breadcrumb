@@ -96,6 +96,7 @@ function readOutput(stateText: string | null, dbMtime: number | null): string {
   if (stateText !== null) out += stateText;
   out += "\n__BC_SEP__\n";
   if (dbMtime !== null) out += String(dbMtime) + "\n";
+  out += "__BC_END__\n";
   return out;
 }
 
@@ -462,7 +463,7 @@ const SEARCH_STATE = JSON.stringify({
     { session_id: "ses_miss", title: "other", directory: "/b", git_branch: "main", git_commit: null, git_dirty: false, last_prompt: "update the readme", updated_at: "2026-09-05T11:00:00Z" },
   ],
 });
-const SEARCH_READ = `__BC_READ__\n${SEARCH_STATE}\n__BC_SEP__\n${Math.floor(Date.parse("2026-09-05T12:00:00Z") / 1000)}\n`;
+const SEARCH_READ = `__BC_READ__\n${SEARCH_STATE}\n__BC_SEP__\n${Math.floor(Date.parse("2026-09-05T12:00:00Z") / 1000)}\n__BC_END__\n`;
 const searchNow = () => Date.parse("2026-09-05T12:00:00Z");
 
 async function hostsFileWith(prefix: string): Promise<string> {

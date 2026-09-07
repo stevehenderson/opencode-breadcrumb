@@ -32,6 +32,7 @@ const DEFAULT_CONNECT_MS = 3_000; // FR-PROBE-021 (OI-3)
 const STALE_AFTER_MS = 60 * 60 * 1000; // FR-PROBE-070 (OI-3)
 const READ_MARKER = "__BC_READ__";
 const READ_SEP = "__BC_SEP__";
+const READ_END = "__BC_END__";
 
 // ---------------------------------------------------------------------------
 // SSH transport (FR-PROBE-020/021): system ssh only.
@@ -180,6 +181,7 @@ export function buildReadCommand(): string {
     "cat \"$HOME/.local/share/breadcrumb/state.json\" 2>/dev/null",
     `printf '\\n${READ_SEP}\\n'`,
     "{ stat -c %Y \"$HOME/.local/share/opencode/opencode.db\" 2>/dev/null || stat -f %m \"$HOME/.local/share/opencode/opencode.db\" 2>/dev/null || true; }",
+    `printf '${READ_END}\\n'`,
   ].join("; ");
 }
 
@@ -194,15 +196,18 @@ export interface ParsedRead {
 }
 
 export function parseReadOutput(raw: string): ParsedRead {
-  const start = raw.indexOf(READ_MARKER);
-  if (start === -1) return { stateText: null, dbMtime: null };
-  const afterMarker = raw.slice(start + READ_MARKER.length);
-  const sep = afterMarker.indexOf(READ_SEP);
-  const text = (sep === -1 ? afterMarker : afterMarker.slice(0, sep)).trim();
-  if (sep === -1) return { stateText: text.length > 0 ? text : null, dbMtime: null };
-  const tail = afterMarker.slice(sep + READ_SEP.length).trim();
+  const start = `${READ_MARKER}\n`;
+  const separator = `\n${READ_SEP}\n`;
+  const end = `\n${READ_END}\n`;
+  if (!raw.startsWith(start) || !raw.endsWith(end)) return { stateText: null, dbMtime: null };
+  const framed = raw.slice(start.length, -end.length);
+  const sep = framed.indexOf(separator);
+  if (sep === -1 || sep !== framed.lastIndexOf(separator)) return { stateText: null, dbMtime: null };
+  const text = framed.slice(0, sep).trim();
+  const tail = framed.slice(sep + separator.length).trim();
+  if (text === "" || tail.includes("\n")) return { stateText: null, dbMtime: null };
   const mtime = tail === "" ? NaN : Number(tail);
-  return { stateText: text.length > 0 ? text : null, dbMtime: Number.isFinite(mtime) ? mtime : null };
+  return { stateText: text, dbMtime: Number.isFinite(mtime) ? mtime : null };
 }
 
 export interface HostRead {
