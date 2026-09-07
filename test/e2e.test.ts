@@ -235,7 +235,11 @@ test("crumb: resumes selection over ssh -t with quoted launch (FR-RESUME-010/020
   assert.ok(r.stdout.includes(`resuming ses_new on alpha — ${repo}`), r.stdout);
   const log = await readLines(e.logFile);
   assert.equal(log.length, 1);
-  assert.ok(log[0].includes(`RESUME host=alpha cmd=cd '${repo}' && opencode -s 'ses_new'`), log[0]);
+  // Launch runs through a login shell so the remote PATH has opencode.
+  assert.ok(log[0].startsWith("RESUME host=alpha cmd="), log[0]);
+  assert.ok(log[0].includes("-lc"), log[0]);
+  assert.ok(log[0].includes("opencode -s") && log[0].includes("ses_new"), log[0]);
+  assert.ok(log[0].includes(repo!), log[0]);
 });
 
 test("crumb: read round uses BatchMode ssh with ConnectTimeout (FR-PROBE-021)", async (t) => {
@@ -283,7 +287,7 @@ test("crumb: git drift shown and confirmed; repo untouched (FR-RESUME-050)", asy
   assert.equal(accepted.code, 0, `${accepted.stdout}\n${accepted.stderr}`);
   const log = await readLines(e.logFile);
   assert.equal(log.length, 1);
-  assert.ok(log[0].includes("RESUME host=alpha cmd=cd"), log[0]);
+  assert.ok(log[0].includes("RESUME host=alpha") && log[0].includes("opencode -s"), log[0]);
   assert.equal(await fs.readFile(path.join(repo!, "hello.txt"), "utf8"), before, "crumb must not mutate the repo");
 });
 

@@ -22,6 +22,7 @@ import {
   installPlugin,
   isLocalHost,
   isOpencodeSessionId,
+  loginShell,
   main,
   parseArgs,
   parseCleanArgs,
@@ -324,9 +325,19 @@ test("launch and remote commands compose quoted values", () => {
   const dir = "/a b/c'd";
   const launch = buildLaunchCommand(dir, "ses $1 `x`");
   assert.equal(launch, "cd '/a b/c'\\''d' && opencode -s 'ses $1 `x`'");
+  // The executed command runs the launch through a login shell (remote PATH).
   const remote = buildRemoteCommand(dir, "ses $1 `x`", true);
-  assert.equal(remote, `tmux new -A -s ${shQuote(tmuxSessionName("ses $1 `x`"))} ${shQuote(launch)}`);
+  assert.equal(remote, `tmux new -A -s ${shQuote(tmuxSessionName("ses $1 `x`"))} ${shQuote(loginShell(launch))}`);
   assert.deepEqual(resumeArgs("myhost", remote), ["-t", "myhost", remote]);
+});
+
+test("loginShell wraps a command in the target's login shell for PATH", () => {
+  assert.equal(loginShell("do thing"), `"\${SHELL:-/bin/bash}" -lc 'do thing'`);
+  // Non-tmux remote command is exactly the login-shelled launch.
+  const cmd = buildRemoteCommand("/w", "ses_1", false);
+  assert.equal(cmd, loginShell(buildLaunchCommand("/w", "ses_1")));
+  assert.match(cmd, /^"\$\{SHELL:-\/bin\/bash\}" -lc /);
+  assert.ok(cmd.includes("opencode -s"));
 });
 
 test("composed launch command is data-safe when executed by a real shell", () => {
@@ -594,7 +605,8 @@ test("main resumes a local session without ever touching SSH", async () => {
   });
   assert.equal(code, 0);
   assert.equal(sshCalled, false, "local resume must not use ssh");
-  assert.ok(resumedCmd && (resumedCmd as string).includes("opencode -s 'ses_hit'"), resumedCmd ?? "no resume");
+  assert.ok(resumedCmd && (resumedCmd as string).includes("ses_hit"), resumedCmd ?? "no resume");
+  assert.ok(resumedCmd && (resumedCmd as string).includes("-lc"), "launched via login shell");
 });
 
 // -- hosts (manage the SSH target list) ----------------------------------------------
