@@ -83,6 +83,9 @@ async function makeEnv(stateJson: string, dbMtime: number | "now" | null = "now"
     stateFile,
     env: {
       ...process.env,
+      // Isolate the local target (crumb always reads this machine too): point
+      // HOME at an empty tmp dir so no real local state leaks into the picker.
+      HOME: tmp,
       PATH: `${bin}:${process.env.PATH}`,
       BC_FAKE_SSH_LOG: logFile,
       BC_FAKE_SSH_ARGS: argsFile,
@@ -237,7 +240,7 @@ test("crumb: resumes selection over ssh -t with quoted launch (FR-RESUME-010/020
   assert.equal(log.length, 1);
   // Launch runs through a login shell so the remote PATH has opencode.
   assert.ok(log[0].startsWith("RESUME host=alpha cmd="), log[0]);
-  assert.ok(log[0].includes("-lc"), log[0]);
+  assert.ok(log[0].includes("-lic"), log[0]);
   assert.ok(log[0].includes("opencode -s") && log[0].includes("ses_new"), log[0]);
   assert.ok(log[0].includes(repo!), log[0]);
 });

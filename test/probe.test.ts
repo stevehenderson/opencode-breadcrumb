@@ -332,11 +332,11 @@ test("launch and remote commands compose quoted values", () => {
 });
 
 test("loginShell wraps a command in the target's login shell for PATH", () => {
-  assert.equal(loginShell("do thing"), `"\${SHELL:-/bin/bash}" -lc 'do thing'`);
+  assert.equal(loginShell("do thing"), `"\${SHELL:-/bin/bash}" -lic 'do thing'`);
   // Non-tmux remote command is exactly the login-shelled launch.
   const cmd = buildRemoteCommand("/w", "ses_1", false);
   assert.equal(cmd, loginShell(buildLaunchCommand("/w", "ses_1")));
-  assert.match(cmd, /^"\$\{SHELL:-\/bin\/bash\}" -lc /);
+  assert.match(cmd, /^"\$\{SHELL:-\/bin\/bash\}" -lic /);
   assert.ok(cmd.includes("opencode -s"));
 });
 
@@ -488,6 +488,7 @@ test("main search shows only matching sessions in the picker, then resumes", asy
   const picked: string[][] = [];
   let resumed: string[] | null = null;
   const code = await main(["search", "ingress", "--hosts", hostsFile, "--no-tmux"], {
+    readLocal: async () => ({ code: 0, stdout: "", stderr: "" }), // isolate this machine
     ssh: async (args) =>
       args.some((a) => a.includes("__BC_READ__"))
         ? { code: 0, stdout: SEARCH_READ, stderr: "" }
@@ -516,6 +517,7 @@ test("main search with no matches exits 1 with a clear message", async () => {
   const hostsFile = await hostsFileWith("bc-search-none-");
   const out: string[] = [];
   const code = await main(["search", "kubernetes", "--hosts", hostsFile], {
+    readLocal: async () => ({ code: 0, stdout: "", stderr: "" }), // isolate this machine
     ssh: async () => ({ code: 0, stdout: SEARCH_READ, stderr: "" }),
     out: (s) => out.push(s),
     err: () => {},
@@ -555,32 +557,40 @@ test("readLocalState formats state + db mtime like the SSH read; missing files d
   assert.ok(typeof got.dbMtime === "number" && Number.isFinite(got.dbMtime));
 });
 
-test("resolveTargets: --local, missing default, empty file -> local; explicit missing -> error; hosts -> list", async () => {
+test("resolveTargets: local auto-included with hosts; --local, --no-local, missing, empty, explicit-missing", async () => {
   const base = parseArgs([]);
   const errs: string[] = [];
   const err = (s: string) => errs.push(s);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bc-targets-"));
 
+  // --local: this machine only.
   assert.deepEqual(await resolveTargets({ ...base, local: true }, dir, err), [LOCAL_HOST]);
 
-  // Default file missing (not explicit) -> local, with a note.
+  // Default file missing (not explicit) -> local only.
   const missing = { ...base, hostsFile: path.join(dir, "nope"), hostsFileExplicit: false };
   assert.deepEqual(await resolveTargets(missing, dir, err), [LOCAL_HOST]);
-  assert.ok(errs.join("\n").includes("reading this machine only"));
 
   // Explicit --hosts that cannot be read -> error (null).
   const explicit = { ...base, hostsFile: path.join(dir, "nope"), hostsFileExplicit: true } satisfies CrumbOptions;
   assert.equal(await resolveTargets(explicit, dir, err), null);
 
-  // Empty file -> local.
+  // Empty file -> local only.
   const emptyFile = path.join(dir, "empty");
   await fs.writeFile(emptyFile, "\n# just a comment\n");
   assert.deepEqual(await resolveTargets({ ...base, hostsFile: emptyFile }, dir, err), [LOCAL_HOST]);
 
-  // Populated file -> its hosts.
+  // Populated file -> this machine PLUS the hosts (local first, deduped).
   const listFile = path.join(dir, "hosts");
   await fs.writeFile(listFile, "alpha\nbeta\n");
-  assert.deepEqual(await resolveTargets({ ...base, hostsFile: listFile }, dir, err), ["alpha", "beta"]);
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: listFile }, dir, err), [LOCAL_HOST, "alpha", "beta"]);
+
+  // --no-local -> just the hosts.
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: listFile, noLocal: true }, dir, err), ["alpha", "beta"]);
+
+  // A list already naming local isn't duplicated.
+  const withLocal = path.join(dir, "hosts2");
+  await fs.writeFile(withLocal, "local\nalpha\n");
+  assert.deepEqual(await resolveTargets({ ...base, hostsFile: withLocal }, dir, err), ["local", "alpha"]);
 });
 
 test("main resumes a local session without ever touching SSH", async () => {
@@ -606,7 +616,7 @@ test("main resumes a local session without ever touching SSH", async () => {
   assert.equal(code, 0);
   assert.equal(sshCalled, false, "local resume must not use ssh");
   assert.ok(resumedCmd && (resumedCmd as string).includes("ses_hit"), resumedCmd ?? "no resume");
-  assert.ok(resumedCmd && (resumedCmd as string).includes("-lc"), "launched via login shell");
+  assert.ok(resumedCmd && (resumedCmd as string).includes("-lic"), "launched via interactive login shell");
 });
 
 // -- hosts (manage the SSH target list) ----------------------------------------------
@@ -819,7 +829,7 @@ test("main routes `health` through the resume path's --health alias", async () =
   const lines: string[] = [];
   const hostsFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "bc-disp-")), "hosts");
   await fs.writeFile(hostsFile, "h1\n");
-  const code = await main(["health", "--hosts", hostsFile], {
+  const code = await main(["health", "--no-local", "--hosts", hostsFile], {
     ssh: async (args) => {
       if (args.some((a) => a.includes("__BC_READ__"))) sawHealthFlag = true;
       return { code: 255, stdout: "", stderr: "down" };
@@ -831,6 +841,32 @@ test("main routes `health` through the resume path's --health alias", async () =
   assert.equal(sawHealthFlag, true, "health must trigger the read fan-out");
   assert.equal(code, 1, "unreachable host -> exit 1");
   assert.ok(lines.join("\n").includes("HOST"), "health table printed");
+});
+
+test("crumb shows both local and remote sessions together by default", async () => {
+  const hostsFile = await hostsFileWith("bc-both-");
+  const localState = JSON.stringify({
+    schema: 1, machine_id: "ml", hostname: "my-laptop", written_at: "2026-09-05T12:30:00Z", plugin_version: "0.1.0",
+    sessions: [{ session_id: "ses_local", title: "local work", directory: "/l", git_branch: "main", git_commit: null, git_dirty: false, last_prompt: "on my laptop", updated_at: "2026-09-05T12:30:00Z" }],
+  });
+  const localRead = `__BC_READ__\n${localState}\n__BC_SEP__\n__BC_END__\n`;
+  const picked: string[][] = [];
+  const code = await main(["--hosts", hostsFile], {
+    readLocal: async () => ({ code: 0, stdout: localRead, stderr: "" }),
+    ssh: async () => ({ code: 0, stdout: SEARCH_READ, stderr: "" }),
+    pick: async (ls) => {
+      picked.push(ls);
+      return null; // cancel; we only care about what's offered
+    },
+    out: () => {},
+    err: () => {},
+    now: searchNow,
+  });
+  assert.equal(code, 1, "cancelled");
+  const shown = picked[0].join("\n");
+  assert.ok(shown.includes("my-laptop") && shown.includes("local work"), "local session shown");
+  assert.ok(shown.includes("alpha") && shown.includes("ingress"), "remote session shown");
+  assert.ok(picked[0].length >= 2, "both local and remote offered");
 });
 
 // -- install / enrollment ------------------------------------------------------------
