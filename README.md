@@ -209,6 +209,18 @@ crumb hosts add build-01        # add SSH targets
 crumb hosts remove build-01    # remove SSH targets
 ```
 
+`crumb search` filters the merged list by machine, title, branch, path, or the
+gist of your last prompt — then resumes your pick, local or remote:
+
+```console
+$ crumb search moon
+1) gpu-2  3h  main  /home/me/dev/vision  Deepest lunar crater  » what's the deepest crater on the moon
+select [1-1] (empty cancels): 1
+resuming ses_9x82ndk3 on gpu-2 — /home/me/dev/vision
+```
+
+**Full command reference, with examples:** [`docs/commands.md`](docs/commands.md).
+
 Useful options include:
 
 | Option | Default | Purpose |
