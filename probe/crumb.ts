@@ -587,6 +587,10 @@ Usage:
   crumb health          show per-machine health (reachability, staleness)
   crumb install         enroll the breadcrumb plugin on this machine
   crumb clean           prune stale/invalid entries from this machine's state
+  crumb hosts [list]    show the SSH target list
+  crumb hosts add <target…>     add one or more SSH targets
+  crumb hosts remove <target…>  remove SSH targets (alias: rm)
+  crumb hosts path      print the host-list file path
   crumb --help
 
 Resume options:
@@ -608,6 +612,11 @@ Clean options (operates on this machine's state file only):
   --all                 remove every session entry (full reset)
   --dry-run, -n         show what would be removed, write nothing
   (default: remove only entries that are not real opencode sessions)
+
+Hosts options:
+  --hosts <file>        operate on an alternate host list
+  (targets are SSH destinations: hostname, user@host, or ~/.ssh/config alias;
+   a "local" target means this machine, read directly)
 
 Host list format: one SSH target per line; # comments and blank lines ok.
 With no host list, crumb reads this machine only. A "local" entry in the list
@@ -1014,16 +1023,22 @@ export function planClean(
   return { kept, removed };
 }
 
-async function writeStateFileAtomic(file: string, state: BreadcrumbState): Promise<void> {
+/** Owner-only atomic write (temp + fsync + rename); creates parent dirs. */
+async function writeFileAtomic(file: string, text: string): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp.${process.pid}.${Date.now()}`);
   const fh = await fs.open(tmp, "w", 0o600);
   try {
-    await fh.writeFile(JSON.stringify(state, null, 2) + "\n", "utf8");
+    await fh.writeFile(text, "utf8");
     await fh.sync();
   } finally {
     await fh.close();
   }
   await fs.rename(tmp, file);
+}
+
+async function writeStateFileAtomic(file: string, state: BreadcrumbState): Promise<void> {
+  await writeFileAtomic(file, JSON.stringify(state, null, 2) + "\n");
 }
 
 export async function runClean(argv: string[], deps: CrumbDeps = {}): Promise<number> {
@@ -1078,9 +1093,156 @@ export async function runClean(argv: string[], deps: CrumbDeps = {}): Promise<nu
 }
 
 // ---------------------------------------------------------------------------
+// Hosts: manage the SSH target list (~/.config/breadcrumb/hosts)
+
+export type HostsAction = "list" | "add" | "remove" | "path";
+
+const HOSTS_ACTIONS: Record<string, HostsAction> = {
+  list: "list",
+  add: "add",
+  remove: "remove",
+  rm: "remove",
+  path: "path",
+};
+
+export interface HostsOptions {
+  action: HostsAction;
+  targets: string[];
+  file: string;
+  help: boolean;
+}
+
+/** A target is one token `ssh` accepts: no whitespace, not a comment. */
+function validateTarget(t: string): void {
+  if (t === "" || /\s/.test(t) || t.startsWith("#")) {
+    throw new Error(`invalid host target: ${JSON.stringify(t)}`);
+  }
+}
+
+export function parseHostsArgs(argv: string[], home: string = homedir()): HostsOptions {
+  const opts: HostsOptions = { action: "list", targets: [], file: defaultHostsFile(home), help: false };
+  let actionSet = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--hosts") {
+      const v = argv[++i];
+      if (v === undefined) throw new Error(`missing value for ${a}`);
+      opts.file = expandHome(v, home);
+    } else if (a === "--help" || a === "-h") {
+      opts.help = true;
+    } else if (a.startsWith("-")) {
+      throw new Error(`unknown option: ${a}`);
+    } else if (!actionSet) {
+      const act = HOSTS_ACTIONS[a];
+      if (act === undefined) throw new Error(`unknown hosts action: ${a} (use list, add, remove, path)`);
+      opts.action = act;
+      actionSet = true;
+    } else {
+      opts.targets.push(a);
+    }
+  }
+  return opts;
+}
+
+export async function runHosts(argv: string[], deps: CrumbDeps = {}): Promise<number> {
+  const out = deps.out ?? ((s: string) => process.stdout.write(s + "\n"));
+  const err = deps.err ?? ((s: string) => process.stderr.write(s + "\n"));
+  const home = deps.home ?? homedir();
+  let opts: HostsOptions;
+  try {
+    opts = parseHostsArgs(argv, home);
+  } catch (e) {
+    err((e as Error).message);
+    return 2;
+  }
+  if (opts.help) {
+    out(HELP_TEXT);
+    return 0;
+  }
+  if (opts.action === "path") {
+    out(opts.file);
+    return 0;
+  }
+
+  let raw = "";
+  let exists = true;
+  try {
+    raw = await fs.readFile(opts.file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") exists = false;
+    else {
+      err(`crumb: cannot read ${opts.file}: ${(e as Error).message}`);
+      return 1;
+    }
+  }
+
+  if (opts.action === "list") {
+    const hosts = parseHosts(raw);
+    if (hosts.length === 0) {
+      out(`no hosts in ${opts.file} — crumb reads this machine only (add one with: crumb hosts add <target>).`);
+      return 0;
+    }
+    hosts.forEach((h, i) => out(`${i + 1}) ${h}`));
+    return 0;
+  }
+
+  if (opts.targets.length === 0) {
+    err(`crumb: hosts ${opts.action} needs at least one target`);
+    return 2;
+  }
+  try {
+    opts.targets.forEach(validateTarget);
+  } catch (e) {
+    err((e as Error).message);
+    return 2;
+  }
+
+  if (opts.action === "add") {
+    const existing = new Set(parseHosts(raw));
+    const toAdd = opts.targets.filter((t) => !existing.has(t));
+    const dupes = opts.targets.filter((t) => existing.has(t));
+    if (toAdd.length === 0) {
+      out(`crumb: already present: ${dupes.join(", ")}`);
+      return 0;
+    }
+    let text = raw;
+    if (text !== "" && !text.endsWith("\n")) text += "\n";
+    text += toAdd.map((t) => t + "\n").join("");
+    await writeFileAtomic(opts.file, text);
+    out(`crumb: added ${toAdd.join(", ")}${dupes.length ? ` (already present: ${dupes.join(", ")})` : ""} → ${opts.file}`);
+    return 0;
+  }
+
+  // remove
+  if (!exists) {
+    out(`crumb: no host list at ${opts.file} — nothing to remove.`);
+    return 0;
+  }
+  const remove = new Set(opts.targets);
+  const removed: string[] = [];
+  const kept = raw.split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed !== "" && !trimmed.startsWith("#") && remove.has(trimmed)) {
+      removed.push(trimmed);
+      return false;
+    }
+    return true;
+  });
+  if (removed.length === 0) {
+    out(`crumb: not found in ${opts.file}: ${opts.targets.join(", ")}`);
+    return 0;
+  }
+  const text = kept.join("\n");
+  await writeFileAtomic(opts.file, text.endsWith("\n") ? text : text + "\n");
+  const notFound = opts.targets.filter((t) => !removed.includes(t));
+  out(`crumb: removed ${removed.join(", ")}${notFound.length ? ` (not found: ${notFound.join(", ")})` : ""} → ${opts.file}`);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Command dispatch
 
-export const SUBCOMMANDS = new Set(["resume", "health", "install", "search", "clean"]);
+export const SUBCOMMANDS = new Set(["resume", "health", "install", "search", "clean", "hosts"]);
 
 /** Peel off a leading subcommand; default to `resume` when none is given. */
 export function splitCommand(argv: string[]): { cmd: string; rest: string[] } {
@@ -1103,6 +1265,7 @@ export async function main(argv: string[], deps: CrumbDeps = {}): Promise<number
   const { cmd, rest } = splitCommand(argv);
   if (cmd === "install") return runInstall(rest, deps);
   if (cmd === "clean") return runClean(rest, deps);
+  if (cmd === "hosts") return runHosts(rest, deps);
   // `crumb health` is sugar for the resume path's --health (kept as an alias).
   if (cmd === "health") return runCrumb(["--health", ...rest], deps);
   if (cmd === "search") {
