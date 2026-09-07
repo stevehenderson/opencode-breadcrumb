@@ -25,6 +25,8 @@ export const MESSAGE_THROTTLE_MS = 5_000;
 const GIT_TIMEOUT_MS = 3_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 const STALE_TMP_MS = 60 * 60 * 1000;
+const STATE_LOCK_TIMEOUT_MS = 10_000;
+const STATE_LOCK_STALE_MS = 60_000;
 
 // In the repo this file lives at plugin/breadcrumb.ts next to shared/state.ts;
 // installed it lives at plugins/breadcrumb.ts with plugins/shared/state.ts.
@@ -296,6 +298,32 @@ export async function writeStateAtomic(dir: string, state: BreadcrumbState): Pro
   await fs.rename(tmp, final);
 }
 
+async function withStateLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const lock = path.join(dir, ".state.lock");
+  const started = Date.now();
+  while (true) {
+    try {
+      await fs.mkdir(lock);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      try {
+        const st = await fs.stat(lock);
+        if (Date.now() - st.mtimeMs > STATE_LOCK_STALE_MS) await fs.rm(lock, { recursive: true, force: true });
+      } catch {
+        // A concurrent owner may have released the lock between stat and rm.
+      }
+      if (Date.now() - started >= STATE_LOCK_TIMEOUT_MS) throw new Error("timed out waiting for state lock");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await fs.rm(lock, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Best-effort removal of temp files left by a plugin killed mid-write. */
 export async function cleanStaleTmpFiles(dir: string): Promise<void> {
   const { STATE_FILE_NAME } = await loadShared();
@@ -414,8 +442,10 @@ export async function createService(opts: PluginServiceOptions): Promise<PluginS
     };
     // Re-read from disk per update so concurrent opencode instances on this
     // machine do not clobber each other's entries.
-    const current = await readLatestState(dir) ?? state;
-    await persist(await upsertSnapshot(current, snap, now()));
+    await withStateLock(dir, async () => {
+      const current = (await readLatestState(dir)) ?? state;
+      await persist(await upsertSnapshot(current, snap, now()));
+    });
   }
 
   async function recordPrompt(sessionID: string, promptText: string): Promise<void> {
@@ -445,8 +475,10 @@ export async function createService(opts: PluginServiceOptions): Promise<PluginS
         if (ref === null) return;
         if (ref.kind === "remove") {
           known.delete(ref.sessionID);
-          const current = await readLatestState(dir);
-          await persist(await removeSnapshot(current ?? state, ref.sessionID, now()));
+          await withStateLock(dir, async () => {
+            const current = await readLatestState(dir);
+            await persist(await removeSnapshot(current ?? state, ref.sessionID, now()));
+          });
           return;
         }
         if (ref.throttled) {

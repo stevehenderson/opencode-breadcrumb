@@ -44,6 +44,7 @@ const FAKE_SSH = [
   "  cat \"${BC_FAKE_ALPHA_STATE:-/nonexistent}\" 2>/dev/null",
   "  printf '\\n__BC_SEP__\\n'",
   "  if [[ -n \"${BC_FAKE_DB_MTIME:-}\" ]]; then printf '%s\\n' \"$BC_FAKE_DB_MTIME\"; fi",
+  "  printf '__BC_END__\\n'",
   "  exit 0",
   "fi",
   "if [[ \"$last\" == *\"test -d\"* ]]; then",
