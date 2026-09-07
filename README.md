@@ -38,7 +38,46 @@ Remote resumes go over an interactive `ssh -t` inside a named tmux session, so
 a dropped connection *detaches* instead of kills; a local resume is just a
 child process. With no host list, crumb still works — against this machine.
 
-![Breadcrumb architecture](docs/readme-architecture.svg)
+```console
+# ── Enroll the plugin on every machine (each runs it locally, once) ──────────
+$ crumb install                                    # this laptop
+installed breadcrumb.ts
+installed shared/state.ts
+Done — enrolled into ~/.config/opencode/plugins.
+
+$ ssh build-01 'cd ~/src/breadcrumb && crumb install'
+installed breadcrumb.ts
+installed shared/state.ts
+
+$ ssh gpu-2 'cd ~/src/breadcrumb && crumb install'
+installed breadcrumb.ts
+installed shared/state.ts
+
+# ── Tell crumb which machines to read: this one + two remotes ────────────────
+$ crumb hosts add local build-01 gpu-2
+crumb: added local, build-01, gpu-2 → ~/.config/breadcrumb/hosts
+$ crumb hosts list
+1) local
+2) build-01
+3) gpu-2
+
+# ── Later, from the laptop: one command reads all three, newest first ────────
+$ crumb
+ 1) omlx      2m   fix-auth-refresh*  ~/dev/app         Refactor auth   » extract the token refresh into its own module
+ 2) build-01  18m  main               ~/src/platform    Ingress triage  » why is staging returning 502 on /api/orders
+ 3) gpu-2     1h   train-run-7        ~/ml/experiments  Eval sweep      » kick off the 7B eval on the new checkpoint
+ 4) omlx      3h   no-branch          ~/tmp/scratch     (untitled)
+ 5) build-01  1d   hotfix-logging     ~/src/platform    Log spam        » silence the debug logging in prod
+select [1-5] (empty cancels): 2
+
+resuming ses_9x82ndk3 on build-01 — /home/dev/src/platform
+# crumb re-checks git over SSH (no drift), then opens the session in tmux on
+# build-01 — you're back where you left off, working tree and all.
+```
+
+`*` marks a dirty working tree at last observation; `»` is the session's gist
+(your last prompt). Rows 1 and 4 are this laptop (read directly, no SSH); the
+rest are the remotes.
 
 Each machine keeps two files: `state.json` (the plugin's snapshot) and
 opencode's own `opencode.db`. crumb reads `state.json` for the sessions and
@@ -68,6 +107,15 @@ tampered state file can mislead the picker; it cannot inject.
 Full specification: [`docs/breadcrumb-spec-v2.md`](docs/breadcrumb-spec-v2.md).
 This repository implements the plugin and probe with live reads only; a local
 cache, timeline UI, and remote dispatch are not built yet.
+
+## Architecture
+
+![Breadcrumb architecture](docs/readme-architecture.svg)
+
+The `crumb` probe reads each machine's `state.json` (and stats `opencode.db`
+for liveness): directly for the machine it runs on, over SSH for the rest. The
+breadcrumb plugin writes `state.json`; opencode writes `opencode.db`. Resume is
+an interactive `ssh -t` for remotes, or a plain child process locally.
 
 ## Requirements
 
