@@ -1,11 +1,15 @@
 # Breadcrumb
 
-**Find and resume your opencode sessions across machines.**
+**Find and resume your [opencode](https://opencode.ai) sessions across machines.**
 
 Breadcrumb gives a developer with a laptop, devbox, build server, or GPU box a
 single place to find recent opencode work. It remembers the workspace, branch,
 commit, dirty state, and a short gist of the last prompt, then opens the saved
 session on the machine where it started.
+
+> Breadcrumb is an excellent map and safe teleporter — "where is work
+> happening, in what state, and let me (or an operator) get back into it
+> without wrecking the tree."
 
 ```text
 crumb = a searchable map of your distributed opencode work
