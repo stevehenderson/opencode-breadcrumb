@@ -140,7 +140,7 @@ export async function readLocalState(home: string = homedir()): Promise<SshResul
   } catch {
     // no opencode.db — liveness stays undetermined
   }
-  return { code: 0, stdout: `${READ_MARKER}\n${stateText}\n${READ_SEP}\n${mtimeLine}`, stderr: "" };
+  return { code: 0, stdout: `${READ_MARKER}\n${stateText}\n${READ_SEP}\n${mtimeLine}${READ_END}\n`, stderr: "" };
 }
 
 /** Run a shell command on this machine, capturing output (local precheck). */
@@ -198,9 +198,12 @@ export interface ParsedRead {
 export function parseReadOutput(raw: string): ParsedRead {
   const start = `${READ_MARKER}\n`;
   const separator = `\n${READ_SEP}\n`;
-  const end = `\n${READ_END}\n`;
-  if (!raw.startsWith(start) || !raw.endsWith(end)) return { stateText: null, dbMtime: null };
-  const framed = raw.slice(start.length, -end.length);
+  // Strip only the end marker + its own trailing newline; the newline *before*
+  // it belongs to the separator (or the mtime line) and must be kept — when a
+  // host reports no db mtime the separator and end marker share that newline.
+  const endMark = `${READ_END}\n`;
+  if (!raw.startsWith(start) || !raw.endsWith(endMark)) return { stateText: null, dbMtime: null };
+  const framed = raw.slice(start.length, raw.length - endMark.length);
   const sep = framed.indexOf(separator);
   if (sep === -1 || sep !== framed.lastIndexOf(separator)) return { stateText: null, dbMtime: null };
   const text = framed.slice(0, sep).trim();
@@ -414,6 +417,17 @@ export function buildLaunchCommand(dir: string, sessionId: string): string {
   return `cd ${shQuote(dir)} && opencode -s ${shQuote(sessionId)}`;
 }
 
+/**
+ * Run a command under the target's *login* shell. `ssh host cmd` (and tmux)
+ * use a non-login, non-interactive shell that never sources ~/.profile,
+ * ~/.bash_profile, or ~/.zprofile — so a tool like `opencode` that lives on a
+ * PATH set up there is "command not found". A login shell loads that PATH.
+ * $SHELL is resolved on the target at runtime; falls back to bash.
+ */
+export function loginShell(command: string): string {
+  return `"\${SHELL:-/bin/bash}" -lc ${shQuote(command)}`;
+}
+
 /** tmux session name, sanitized to tmux's allowed character set. */
 export function tmuxSessionName(sessionId: string): string {
   return "bc_" + sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -421,7 +435,8 @@ export function tmuxSessionName(sessionId: string): string {
 
 /** FR-RESUME-030: wrap in a named tmux session so drops detach, not kill. */
 export function buildRemoteCommand(dir: string, sessionId: string, useTmux: boolean): string {
-  const launch = buildLaunchCommand(dir, sessionId);
+  // Always run the launch via a login shell so opencode is found on PATH.
+  const launch = loginShell(buildLaunchCommand(dir, sessionId));
   if (!useTmux) return launch;
   return `tmux new -A -s ${shQuote(tmuxSessionName(sessionId))} ${shQuote(launch)}`;
 }
@@ -839,7 +854,7 @@ export async function runCrumb(argv: string[], deps: CrumbDeps = {}): Promise<nu
     if (local) err(`crumb: local pre-check failed: ${firstLine(pre.stderr) ?? `exit ${pre.code}`}`);
     else {
       err(`crumb: cannot reach ${sel.host} to pre-check: ${firstLine(pre.stderr) ?? `ssh exit ${pre.code}`}`);
-      err(`crumb: manual: ssh -t ${shQuote(sel.host)} ${shQuote(buildLaunchCommand(sel.directory, sel.session_id))}`);
+      err(`crumb: manual: ssh -t ${shQuote(sel.host)} ${shQuote(buildRemoteCommand(sel.directory, sel.session_id, false))}`);
     }
     return 1; // FR-RESUME-060
   }
