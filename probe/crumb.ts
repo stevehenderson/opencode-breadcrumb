@@ -418,14 +418,16 @@ export function buildLaunchCommand(dir: string, sessionId: string): string {
 }
 
 /**
- * Run a command under the target's *login* shell. `ssh host cmd` (and tmux)
- * use a non-login, non-interactive shell that never sources ~/.profile,
- * ~/.bash_profile, or ~/.zprofile — so a tool like `opencode` that lives on a
- * PATH set up there is "command not found". A login shell loads that PATH.
+ * Run a command under an *interactive login* shell, replicating the
+ * environment you get from a plain `ssh host`. `ssh host cmd` and tmux use a
+ * non-login, non-interactive shell that sources none of the files where a tool
+ * like `opencode` is added to PATH — profiles are skipped, and ~/.bashrc/~/.zshrc
+ * usually guard themselves to a no-op when non-interactive. `-lic` sources both
+ * the login profile and the interactive rc, so PATH matches your normal shell.
  * $SHELL is resolved on the target at runtime; falls back to bash.
  */
 export function loginShell(command: string): string {
-  return `"\${SHELL:-/bin/bash}" -lc ${shQuote(command)}`;
+  return `"\${SHELL:-/bin/bash}" -lic ${shQuote(command)}`;
 }
 
 /** tmux session name, sanitized to tmux's allowed character set. */
@@ -531,6 +533,8 @@ export interface CrumbOptions {
   hostsFileExplicit: boolean;
   /** Force local-only: read this machine directly, never SSH. */
   local: boolean;
+  /** Exclude this machine; read only the hosts in the list. */
+  noLocal: boolean;
   plain: boolean;
   noTmux: boolean;
   deadlineMs: number;
@@ -546,6 +550,7 @@ export function parseArgs(argv: string[]): CrumbOptions {
     hostsFile: defaultHostsFile(),
     hostsFileExplicit: false,
     local: false,
+    noLocal: false,
     plain: false,
     noTmux: false,
     deadlineMs: DEFAULT_DEADLINE_MS,
@@ -570,6 +575,9 @@ export function parseArgs(argv: string[]): CrumbOptions {
         break;
       case "--local":
         opts.local = true;
+        break;
+      case "--no-local":
+        opts.noLocal = true;
         break;
       case "--plain":
         opts.plain = true;
@@ -616,6 +624,7 @@ Usage:
 Resume options:
   --hosts <file>        host list file (default ~/.config/breadcrumb/hosts)
   --local               read only this machine, directly (no SSH)
+  --no-local            read only the hosts; exclude this machine
   --plain               numbered list from stdin instead of fzf
   --no-tmux             do not wrap the resume in a tmux session
   --deadline <ms>       overall read deadline (default 10000)
@@ -639,8 +648,9 @@ Hosts options:
    a "local" target means this machine, read directly)
 
 Host list format: one SSH target per line; # comments and blank lines ok.
-With no host list, crumb reads this machine only. A "local" entry in the list
-mixes this machine (read directly) with your SSH targets.
+crumb always reads this machine too (directly, no SSH) alongside the hosts, so
+you see local and remote sessions together; use --no-local to exclude it, or
+--local for this machine only.
 Exit codes: 0 ok/resumed; 1 cancelled, no selection, or resume failed;
 2 configuration error. crumb health exits 1 if any host is unreachable.
 (--health is accepted as an alias for the health command.)`;
@@ -664,11 +674,12 @@ export interface CrumbDeps {
 }
 
 /**
- * Decide which machines to read. Precedence: `--local` forces this machine
- * only; otherwise the host list is read, and a *missing default* file (or an
- * empty list) also falls back to local — crumb always works out of the box on
- * the machine where it runs. An explicit `--hosts <file>` that cannot be read
- * is an error. Returns null on that error (message already printed).
+ * Decide which machines to read. Precedence:
+ *  - `--local` → this machine only.
+ *  - otherwise read the host list and, unless `--no-local`, include this
+ *    machine alongside it (deduped) so local and remote sessions show together.
+ * A *missing default* file just means "no hosts" (→ local only); an explicit
+ * `--hosts <file>` that cannot be read is an error (returns null, msg printed).
  */
 export async function resolveTargets(
   opts: CrumbOptions,
@@ -676,20 +687,20 @@ export async function resolveTargets(
   err: (s: string) => void,
 ): Promise<string[] | null> {
   if (opts.local) return [LOCAL_HOST];
-  let text: string;
+  let hosts: string[] = [];
   try {
-    text = await fs.readFile(expandHome(opts.hostsFile, home), "utf8");
+    hosts = parseHosts(await fs.readFile(expandHome(opts.hostsFile, home), "utf8"));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !opts.hostsFileExplicit) {
-      err("crumb: no host list; reading this machine only (add ~/.config/breadcrumb/hosts for more).");
-      return [LOCAL_HOST];
+    if (!((e as NodeJS.ErrnoException).code === "ENOENT" && !opts.hostsFileExplicit)) {
+      err(`crumb: cannot read host list ${expandHome(opts.hostsFile, home)}: ${(e as Error).message}`);
+      err("crumb: create it with one SSH target per line (see README), or use --local.");
+      return null;
     }
-    err(`crumb: cannot read host list ${expandHome(opts.hostsFile, home)}: ${(e as Error).message}`);
-    err("crumb: create it with one SSH target per line (see README), or use --local.");
-    return null;
+    // Default file simply doesn't exist yet — treat as no remote hosts.
   }
-  const hosts = parseHosts(text);
-  return hosts.length === 0 ? [LOCAL_HOST] : hosts;
+  if (opts.noLocal) return hosts;
+  // Always include this machine unless the list already names it.
+  return hosts.some(isLocalHost) ? hosts : [LOCAL_HOST, ...hosts];
 }
 
 /**

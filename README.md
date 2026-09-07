@@ -196,8 +196,9 @@ settings. Breadcrumb delegates connection behavior to the system SSH client.
 ## Commands
 
 ```sh
-crumb                           # browse and resume all configured hosts
+crumb                           # browse this machine + all configured hosts
 crumb --local                   # browse only this machine, without SSH
+crumb --no-local                # browse only the remote hosts
 crumb search <terms...>         # filter by machine, title, branch, path, or gist
 crumb health                    # show reachability, freshness, and versions
 crumb install                   # enroll the plugin on this machine
@@ -212,6 +213,7 @@ Useful options include:
 |---|---:|---|
 | `--hosts <file>` | `~/.config/breadcrumb/hosts` | Use another host list |
 | `--local` | off | Read and resume only on this machine |
+| `--no-local` | off | Exclude this machine; read only the hosts |
 | `--plain` | automatic | Force the numbered picker |
 | `--no-tmux` | off | Resume without the remote tmux wrapper |
 | `--connect <ms>` | `3000` | Per-host SSH connection timeout |
